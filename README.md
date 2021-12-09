@@ -1,3 +1,3 @@
 # lawson-bandits
 
-cbPar.jl - main script for runnin bandit simulations
+cbPar.jl - main script for running bandit simulations
