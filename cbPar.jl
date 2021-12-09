@@ -73,7 +73,7 @@ function ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n
 	    CovCon = old_cov * context ./ obs_sd
 	    #bandit_posterior_covs[action, :, :] = inv(context * context' / obs_sd^2 + old_precision)
 	    bandit_posterior_covs[action, :, :] = old_cov - CovCon * CovCon' ./ (1 + dot(context, old_cov, context))
-	    bandit_posterior_covs[action, :, :] = ((bandit_posterior_covs[action,:,:]) + (bandit_posterior_covs[action,:,:])')/2
+	    bandit_posterior_covs[action, :, :] = ((bandit_posterior_covs[action,:,:]) + bandit_posterior_covs[action,:,:]')/2
 	    bandit_posterior_means[action, :] = (bandit_posterior_covs[action, :, :]) * (old_cov \ (bandit_posterior_means[action,:]) + context * obs / obs_sd^2)
 
 	    println("Ep: ", ep, " - ", t, " of ", T, " for ", String(Symbol(action_function)))
