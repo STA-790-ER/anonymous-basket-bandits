@@ -249,7 +249,7 @@ upper_triangular_vec = function(M)
 
 	d = size(M)[1]
 
-    output = zeros(convert(Int64((d+1) * d / 2)))
+    output = zeros(convert(Int64,(d+1) * d / 2))
 
 	count = 1
 	for i in 1:d
