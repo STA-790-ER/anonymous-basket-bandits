@@ -263,6 +263,8 @@ upper_triangular_vec = function(M)
 
 end
 
+cov_vec_len = convert(Int64, (context_dim + 1) * context_dim / 2)
+
 for t in 1:T
     cum_rewards = [sum(GRID_REWARDS[j, (T-t+1):T]) for j in 1:(n_points*n_episodes)]
     output[t, :, 1] = cum_rewards
@@ -274,7 +276,7 @@ for t in 1:T
         for j in 1:(n_points*n_episodes)
 
             #output[t, j, (2+context_dim*bandit_count+context_dim*(bandit-1)):(1+context_dim*bandit_count+context_dim*bandit)] = eigvals(GRID_POST_COVS[j, (T-t+1), bandit, :, :])
-			output[t, j, (2+context_dim*bandit_count+context_dim*(bandit-1)):(1+context_dim*bandit_count+context_dim*bandit)] = upper_triangular_vec(GRID_POST_COVS[j, (T-t+1), bandit, :, :])
+			output[t, j, (2+context_dim*bandit_count+cov_vec_len*(bandit-1)):(1+context_dim*bandit_count+cov_vec_len*bandit)] = upper_triangular_vec(GRID_POST_COVS[j, (T-t+1), bandit, :, :])
 
         end
     end
