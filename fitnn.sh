@@ -1,0 +1,17 @@
+#!/bin/bash
+#SBATCH -J jlcb1
+#SBATCH --array 1-100
+#SBATCH --cpus-per-task 1
+#SBATCH --output="./slurmout/R-%A_%a.out"
+#SBATCH --error="./slurmout/R-%A_%a.err"
+#SBATCH --mem=8G
+#SBATCH --partition=common,scavenger
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=jml165@duke.edu
+#SBATCH --exclude=dcc-ultrasound-04,dcc-ultrasound-06,dcc-ultrasound-07
+
+module purge
+module load Julia/1.6.1
+
+julia -t 1 nn.jl
+
