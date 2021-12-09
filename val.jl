@@ -256,6 +256,7 @@ upper_triangular_vec = function(M)
 		for j in i:d
 			output[count] = d[i, j]
 			count += 1
+        end
 	end
 
 	return output
