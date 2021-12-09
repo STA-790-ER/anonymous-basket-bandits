@@ -3,4 +3,4 @@
 
 module load R
 
-Rscript ~/combine.R 
+Rscript ~/rl/lawson-bandits/combine.R 

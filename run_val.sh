@@ -2,10 +2,10 @@
 
 rm -f ~/slurmout/*
 rm -rf ~/rl/valresults/
-mkdir ~/rl/valresults 
+mkdir ~/rl/valresults
 rm -f ~/rl/valcombresults/*.csv
 
-sbatch val.sh
+sbatch ~/rl/lawson-bandits/val.sh
 #wait
 
 #module load R
