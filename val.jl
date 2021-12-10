@@ -243,7 +243,11 @@ print("\n")
     context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
 
 #print(GRID_REWARDS)
-output = zeros(T, n_points*n_episodes, 1 + 2 * context_dim * bandit_count)
+
+
+cov_vec_len = convert(Int64, (context_dim + 1) * context_dim / 2)
+
+output = zeros(T, n_points*n_episodes, 1 + (context_dim + cov_vec_len) * bandit_count)
 
 upper_triangular_vec = function(M)
 
@@ -263,7 +267,6 @@ upper_triangular_vec = function(M)
 
 end
 
-cov_vec_len = convert(Int64, (context_dim + 1) * context_dim / 2)
 
 for t in 1:T
     cum_rewards = [sum(GRID_REWARDS[j, (T-t+1):T]) for j in 1:(n_points*n_episodes)]
