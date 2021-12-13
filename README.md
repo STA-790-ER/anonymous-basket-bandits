@@ -5,4 +5,4 @@ cbPar.jl - main script for running bandit simulations
 * For each episode in contextual_bandit_simulator, a function ep_contextual_bandit_simulator is called which executes a single episode of the bandit simulation.
 * Available policy functions:
   * greedy_policy - selects at each time step the arm with maximal mean reward for the given context
-  * epsilon_greedy_policy - with probability 1-$\epsilson$ selects 
+  * epsilon_greedy_policy - with probability 1-&epsilon selects 
