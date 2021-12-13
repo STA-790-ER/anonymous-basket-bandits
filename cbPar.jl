@@ -47,20 +47,18 @@ end
 
 upper_triangular_vec = function(M)
 
-        d = size(M)[1]
+    d = size(M)[1]
 
     output = zeros(convert(Int64,(d+1) * d / 2))
 
-        count = 1
-        for i in 1:d
-                for j in i:d
-                        output[count] = M[i, j]
-                        count += 1
+    count = 1
+    for i in 1:d
+        for j in i:d
+            output[count] = M[i, j]
+            count += 1
         end
-        end
-
+    end
         return output
-
 end
 
 function ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
@@ -532,6 +530,7 @@ function val_greedy_rollout(T_remainder, rollout_length, lambda, context_dim, co
         input_vec = vec(bandit_posterior_means')
         append!(input_vec, vcat([upper_triangular_vec(bandit_posterior_covs[a, :, :]) for a in 1:bandit_count]...))
         disc_reward += (discount^min(T_remainder, rollout_length)) * neural_net_list[truncation_length](input_vect)
+    end
 
     return disc_reward
 
