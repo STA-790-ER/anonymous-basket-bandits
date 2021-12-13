@@ -40,8 +40,8 @@ const idx = Base.parse(Int, ENV["SLURM_ARRAY_TASK_ID"])
 
 neural_net_list = []
 for i in 1:T
-    @load "/hpc/home/jml165/rl/valneuralnets/valnn_$(i).bson" model
-    push!(neural_net_list, model)
+    @load "/hpc/home/jml165/rl/valneuralnets/valnn_$(i).bson" m
+    push!(neural_net_list, m)
 end
 
 
