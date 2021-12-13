@@ -23,7 +23,7 @@ const n_episodes = 2
 const discount = 1.
 const epsilon = .01
 
-const rollout_length = 10
+const rollout_length = 5
 const n_rollouts = 50000
 const n_opt_rollouts = 10
 const n_spsa_iter = 10
@@ -527,9 +527,9 @@ function val_greedy_rollout(T_remainder, rollout_length, lambda, context_dim, co
 
 
     if truncation_length > 0
-        input_vec = vec(bandit_posterior_means')
+        input_vec = Vector(vec(bandit_posterior_means'))
         append!(input_vec, vcat([upper_triangular_vec(bandit_posterior_covs[a, :, :]) for a in 1:bandit_count]...))
-        disc_reward += (discount^min(T_remainder, rollout_length)) * neural_net_list[truncation_length](input_vect)
+        disc_reward += (discount^min(T_remainder, rollout_length)) * neural_net_list[truncation_length](input_vec)[1]
     end
 
     return disc_reward
