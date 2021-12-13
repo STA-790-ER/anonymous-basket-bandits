@@ -2,6 +2,7 @@
 using LinearAlgebra, Statistics, Plots, Distributions, StatsBase, DelimitedFiles, CSV, Tables, Random, BenchmarkTools
 
 using BayesianOptimization, GaussianProcesses, Distributions
+using Flux, BSON
 BLAS.set_num_threads(1)
 
 #cnst mts = MersenneTwister.(1:Threads.nthreads())
@@ -35,6 +36,31 @@ const n_grid_rollouts = 50
 
 
 const idx = Base.parse(Int, ENV["SLURM_ARRAY_TASK_ID"])
+
+neural_net_list = []
+for i in 1:T
+    @load "/hpc/home/jml165/rl/valneuralnets/valnn_$(i).bson" model
+    push!(neural_net_list, model)
+end
+
+
+upper_triangular_vec = function(M)
+
+        d = size(M)[1]
+
+    output = zeros(convert(Int64,(d+1) * d / 2))
+
+        count = 1
+        for i in 1:d
+                for j in i:d
+                        output[count] = M[i, j]
+                        count += 1
+        end
+        end
+
+        return output
+
+end
 
 function ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
     context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon, global_bandit_param)
@@ -369,8 +395,6 @@ function greedy_rollout(T_remainder, rollout_length, lambda, context_dim, contex
     context_sd, obs_sd, bandit_count, discount, bandit_posterior_covs, bandit_posterior_means, bandit_param,
 	context, true_expected_rewards, CovCon, old_cov, SigInvMu)
 
-    #temp_post_covs = bandit_posterior_covs
-    #temp_post_means = bandit_posterior_means
     disc_reward = 0
     fill!(context, 0.0)
     fill!(true_expected_rewards, 0.0)
@@ -385,34 +409,6 @@ function greedy_rollout(T_remainder, rollout_length, lambda, context_dim, contex
         context[context_seed] = 1
         mul!(true_expected_rewards, bandit_param, context)
 
-        #mean_max_bandit = 1
-        #mean_max_val = dot((@view bandit_posterior_means[1,:]), context)
-        #
-        #var_max_bandit = 1
-        #var_max_val = dot(context, (@view bandit_posterior_covs[1,:,:]), context)
-#
-        #for i = 2:bandit_count
-            #
-            #new_val = dot((@view bandit_posterior_means[i,:]),context)
-            #if new_val > mean_max_val
-                #mean_max_val = new_val
-                #mean_max_bandit = i
-            #end
-#
-            #new_val = dot(context, (@view bandit_posterior_covs[i, :, :]), context)
-#
-            #if new_val > var_max_val
-                #var_max_val = new_val
-                #var_max_bandit = i
-            #end
-        #end
-#
-        #if mean_max_bandit == var_max_bandit
-        #
-            #action = mean_max_bandit
-#
-        #else
-        # alt action find
         curr_ind = 1
         curr_max = dot((@view bandit_posterior_means[1,:]),context)
         for i in 2:bandit_count
