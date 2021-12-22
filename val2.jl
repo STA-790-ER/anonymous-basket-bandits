@@ -19,7 +19,8 @@ const bandit_count = 3
 const bandit_prior_mean = 0
 const bandit_prior_sd = 10
 
-const n_episodes = 10000
+const T = 100
+const n_episodes = 2
 
 const discount = 1.
 const epsilon = .01
@@ -35,16 +36,15 @@ const grid_num = 6
 const int_length = 2
 const n_grid_rollouts = 50
 
-const n_points = 10
+const n_points = 3
 
 ## SIMULATOR FUNCTION
 
 
 
-
 const idx = Base.parse(Int, ENV["SLURM_ARRAY_TASK_ID"])
 
-const T = 100
+
 
 function grid_contextual_bandit_simulator(n_points, action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
     context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
@@ -52,12 +52,10 @@ function grid_contextual_bandit_simulator(n_points, action_function, T, rollout_
     means = zeros(n_points, bandit_count, context_dim)
     covs = zeros(n_points, bandit_count, context_dim, context_dim)
 
-#    GRID_REWARDS = zeros(n_episodes*n_points, T)
-#    GRID_POST_MEANS = zeros(n_episodes*n_points, T, bandit_count, context_dim)
-#    GRID_POST_COVS = zeros(n_episodes*n_points, T, bandit_count, context_dim, context_dim)
-    MEAN_REWARDS = zeros(n_points, T)
-    MEAN_POST_MEANS = zeros(n_points, T, bandit_count, context_dim)
-    MEAN_POST_COVS = zeros(n_points, T, bandit_count, context_dim, context_dim)
+    GRID_REWARDS = zeros(n_episodes*n_points, T)
+    GRID_POST_MEANS = zeros(n_episodes*n_points, T, bandit_count, context_dim)
+    GRID_POST_COVS = zeros(n_episodes*n_points, T, bandit_count, context_dim, context_dim)
+
     for i in 1:n_points
         for j in 1:bandit_count
             means[i, j, :] = rand(MvNormal(repeat([bandit_prior_mean], context_dim),
@@ -75,22 +73,15 @@ function grid_contextual_bandit_simulator(n_points, action_function, T, rollout_
         TOT_REWARDS, TOT_POST_MEANS, TOT_POST_COVS = contextual_bandit_simulator(action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
             context_sd, obs_sd, bandit_count, bandit_prior_means, bandit_prior_covs, discount, epsilon)
         #print(TOT_REWARDS)
-#        GRID_REWARDS[((i-1)*n_episodes+1):(i*n_episodes), :] = TOT_REWARDS
-        MEAN_REWARDS[i, :] = Vector([mean(TOT_REWARDS[:, t]) for t in 1:T])
-        MEAN_POST_MEANS[i, :, :, :] = TOT_POST_MEANS[1, :, :, :]
-        MEAN_POST_COVS[i, :, :, :, :] = TOT_POST_COVS[1, :, :, :, :]
-#        GRID_POST_MEANS[((i-1)*n_episodes+1):(i*n_episodes), :, :, :] = TOT_POST_MEANS
-#        GRID_POST_COVS[((i-1)*n_episodes+1):(i*n_episodes), :, :, :, :] = TOT_POST_COVS
+        GRID_REWARDS[((i-1)*n_episodes+1):(i*n_episodes), :] = TOT_REWARDS
+        GRID_POST_MEANS[((i-1)*n_episodes+1):(i*n_episodes), :, :, :] = TOT_POST_MEANS
+        GRID_POST_COVS[((i-1)*n_episodes+1):(i*n_episodes), :, :, :, :] = TOT_POST_COVS
 
-        if i % 100 == 0 
-	        println("Point Count: ", i, " for ", String(Symbol(action_function)))
-            flush(stdout)
-        end
 
     end
 
 
-    return MEAN_REWARDS, MEAN_POST_MEANS, MEAN_POST_COVS
+    return GRID_REWARDS, GRID_POST_MEANS, GRID_POST_COVS
 
 
 
@@ -121,43 +112,39 @@ function ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n
         #io = open("~/rl/monitor/monitor_$(idx).txt", "w")
 	#write(io, 0)
 	#close(io)
-    for t in 1:T
+        for t in 1:T
 
-        POST_MEANS[t, :, :] = bandit_posterior_means
-        POST_COVS[t, :, :, :] = bandit_posterior_covs
+            POST_MEANS[t, :, :] = bandit_posterior_means
+            POST_COVS[t, :, :, :] = bandit_posterior_covs
 
-        context = randn(context_dim) * context_sd .+ context_mean
-        true_expected_rewards = true_bandit_param * context
-        action = action_function(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
-        true_expected_reward = true_expected_rewards[action]
-        EPREWARDS[t] = true_expected_reward
-        EPOPTREWARDS[t] = maximum(true_expected_rewards)
-        obs = randn() * obs_sd + true_expected_reward
+            context = randn(context_dim) * context_sd .+ context_mean
+            true_expected_rewards = true_bandit_param * context
+            action = action_function(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+            true_expected_reward = true_expected_rewards[action]
+            EPREWARDS[t] = true_expected_reward
+            EPOPTREWARDS[t] = maximum(true_expected_rewards)
+	    obs = randn() * obs_sd + true_expected_reward
             #old_cov = bandit_posterior_covs[action, :, :]
-        #print(bandit_posterior_covs[action,:,:])
-        #old_precision = inv(bandit_posterior_covs[action,:,:])
-        old_cov = bandit_posterior_covs[action, :, :]
-        CovCon = old_cov * context ./ obs_sd
-        #bandit_posterior_covs[action, :, :] = inv(context * context' / obs_sd^2 + old_precision)
-        bandit_posterior_covs[action, :, :] = old_cov - CovCon * CovCon' ./ (1 + dot(context, old_cov, context))
-        bandit_posterior_covs[action, :, :] = ((bandit_posterior_covs[action,:,:]) + (bandit_posterior_covs[action,:,:])')/2
-        bandit_posterior_means[action, :] = (bandit_posterior_covs[action, :, :]) * (old_cov \ (bandit_posterior_means[action,:]) + context * obs / obs_sd^2)
+	    #print(bandit_posterior_covs[action,:,:])
+	    #old_precision = inv(bandit_posterior_covs[action,:,:])
+	    old_cov = bandit_posterior_covs[action, :, :]
+	    CovCon = old_cov * context ./ obs_sd
+	    #bandit_posterior_covs[action, :, :] = inv(context * context' / obs_sd^2 + old_precision)
+	    bandit_posterior_covs[action, :, :] = old_cov - CovCon * CovCon' ./ (1 + dot(context, old_cov, context))
+	    bandit_posterior_covs[action, :, :] = ((bandit_posterior_covs[action,:,:]) + (bandit_posterior_covs[action,:,:])')/2
+	    bandit_posterior_means[action, :] = (bandit_posterior_covs[action, :, :]) * (old_cov \ (bandit_posterior_means[action,:]) + context * obs / obs_sd^2)
 
-        #println("Ep: ", ep, " - ", t, " of ", T, " for ", String(Symbol(action_function)))
-        #    flush(stdout)
+	    println("Ep: ", ep, " - ", t, " of ", T, " for ", String(Symbol(action_function)))
+            flush(stdout)
 
-        #io = open("~/rl/monitor/monitor_$(idx).txt", "r")
-        #curr_prog = read(io, Int)
-        #close(io)
-        #io = open("~/rl/monitor/monitor_$(idx).txt", "w")
-        #write(io, curr_prog+1)
-        #close(io)
+	    #io = open("~/rl/monitor/monitor_$(idx).txt", "r")
+	    #curr_prog = read(io, Int)
+	    #close(io)
+	    #io = open("~/rl/monitor/monitor_$(idx).txt", "w")
+	    #write(io, curr_prog+1)
+	    #close(io)
 
-    end
-#        if ep % 10 == 0 
-#	        println("Ep: ", ep, " for ", String(Symbol(action_function)))
-#            flush(stdout)
-#        end
+        end
 	return EPREWARDS, POST_MEANS, POST_COVS
 end
 
@@ -264,7 +251,7 @@ print("\n")
 
 cov_vec_len = convert(Int64, (context_dim + 1) * context_dim / 2)
 
-output = zeros(T, n_points*1, 1 + (context_dim + cov_vec_len) * bandit_count)
+output = zeros(T, n_points*n_episodes, 1 + (context_dim + cov_vec_len) * bandit_count)
 
 upper_triangular_vec = function(M)
 
@@ -284,23 +271,133 @@ upper_triangular_vec = function(M)
 
 end
 
-for t in 1:100
 
-    cum_rewards = [sum(GRID_REWARDS[j, 1:t]) for j in 1:(n_points*1)]
+for t in 1:T
+    cum_rewards = [sum(GRID_REWARDS[j, (T-t+1):T]) for j in 1:(n_points*n_episodes)]
     output[t, :, 1] = cum_rewards
     for bandit in 1:bandit_count
 
         output[t, :, (2+context_dim*(bandit-1)):(1+context_dim*bandit)] =
-            GRID_POST_MEANS[:, 1, bandit, :]
+            GRID_POST_MEANS[:, (T-t+1), bandit, :]
 
-        for j in 1:(n_points*1)
+        for j in 1:(n_points*n_episodes)
 
             #output[t, j, (2+context_dim*bandit_count+context_dim*(bandit-1)):(1+context_dim*bandit_count+context_dim*bandit)] = eigvals(GRID_POST_COVS[j, (T-t+1), bandit, :, :])
-            output[t, j, (2+context_dim*bandit_count+cov_vec_len*(bandit-1)):(1+context_dim*bandit_count+cov_vec_len*bandit)] = upper_triangular_vec(GRID_POST_COVS[j, 1, bandit, :, :])
+			output[t, j, (2+context_dim*bandit_count+cov_vec_len*(bandit-1)):(1+context_dim*bandit_count+cov_vec_len*bandit)] = upper_triangular_vec(GRID_POST_COVS[j, (T-t+1), bandit, :, :])
 
         end
     end
 
-    CSV.write("/hpc/home/jml165/rl/valresults/results_$(idx)_$(t).csv", Tables.table(output[t, :, :]))
+    #CSV.write("/hpc/home/jml165/rl/valresults/results_$(idx)_$(t).csv", Tables.table(output[t, :, :]))
 
-end 
+end
+
+
+using Flux
+using BSON: @save, @load
+
+if idx == 1
+
+    rm("/hpc/home/jml165/rl/valneuralnets/", recursive = true, force = true)
+    mkdir("/hpc/home/jml165/rl/valneuralnets")
+    @timeit to "loop" begin 
+    for t in 1:T
+
+        dat = output[t,:,:]
+
+
+
+        ncol = size(dat)[2]
+
+
+        X = dat[:, 3:ncol]'
+        Y = dat[:, 2]'
+
+        opt = Descent(.01)
+
+        hidden_size = div(ncol-2, 2)
+
+
+        m = Chain(Dense(ncol - 2, hidden_size, σ), Dense(hidden_size, 1))
+        loss(x,y) = sum(Flux.Losses.mse(m(x),y))
+        @timeit to "train_$(t)" Flux.train!(loss, Flux.params(m), [(X,Y)], opt)
+
+        @timeit to "save" @save "/hpc/home/jml165/rl/valneuralnets/valnn_$(t)_$(idx).bson" m
+    end
+    end
+
+    show(to)
+
+else
+
+    t = 1 
+    dat = output[t,:,:]
+
+
+
+    ncol = size(dat)[2]
+
+
+    X = dat[:, 3:ncol]'
+    Y = dat[:, 2]'
+
+    opt = Descent(.01)
+
+    hidden_size = div(ncol-2, 2)
+
+    #@timeit to "load" @load "/hpc/home/jml165/rl/valneuralnets/valnn_$(t)_$(idx-1).bson" m
+    m = Chain(Dense(ncol - 2, hidden_size, σ), Dense(hidden_size, 1))
+    loss(x,y) = sum(Flux.Losses.mse(m(x),y))
+    Flux.train!(loss, Flux.params(m), [(X,Y)], opt)
+
+    #@timeit to "save" @save "/hpc/home/jml165/rl/valneuralnets/valnn_$(t)_$(idx).bson" m
+    #@timeit to "rm" rm("/hpc/home/jml165/rl/valneuralnets/valnn_$(t)_$(idx-1).bson")
+
+    while true
+        if isfile("/hpc/home/jml165/rl/valneuralnets/valnn_$(T)_$(idx-1).bson")
+             @timeit to "loop" begin
+             for t in 1:T
+
+                dat = output[t,:,:]
+
+
+
+                ncol = size(dat)[2]
+
+
+                X = dat[:, 3:ncol]'
+                Y = dat[:, 2]'
+
+                opt = Descent(.01)
+
+                hidden_size = div(ncol-2, 2)
+
+                @timeit to "load" @load "/hpc/home/jml165/rl/valneuralnets/valnn_$(t)_$(idx-1).bson" m
+                #m = Chain(Dense(ncol - 2, hidden_size, σ), Dense(hidden_size, 1))
+                loss(x,y) = sum(Flux.Losses.mse(m(x),y))
+                @timeit to "train_$(t)" Flux.train!(loss, Flux.params(m), [(X,Y)], opt)
+
+                @timeit to "save" @save "/hpc/home/jml165/rl/valneuralnets/valnn_$(t)_$(idx).bson" m
+                @timeit to "rm" rm("/hpc/home/jml165/rl/valneuralnets/valnn_$(t)_$(idx-1).bson")
+            end
+            end
+
+            show(to)
+
+            break
+        end
+    end
+end
+
+if idx == 399
+    for t in 1:T
+
+        @save "/hpc/home/jml165/rl/valneuralnets/valnn_$(t).bson" m
+        rm("/hpc/home/jml165/rl/valneuralnets/valnn_$(t)_$(idx).bson")
+
+    end
+end
+
+
+
+
