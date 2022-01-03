@@ -19,13 +19,13 @@ const bandit_count = 3
 const bandit_prior_mean = 0
 const bandit_prior_sd = 10
 
-const n_episodes = 10000
+const n_episodes = 50000
 
 const discount = 1.
 const epsilon = .01
 
 const rollout_length = 100
-const n_rollouts = 50000
+const n_rollouts = 100000
 const n_opt_rollouts = 10
 const n_spsa_iter = 10
 
@@ -35,7 +35,7 @@ const grid_num = 6
 const int_length = 2
 const n_grid_rollouts = 50
 
-const n_points = 10
+const n_points = 5
 
 ## SIMULATOR FUNCTION
 
@@ -76,9 +76,10 @@ function grid_contextual_bandit_simulator(n_points, action_function, T, rollout_
             context_sd, obs_sd, bandit_count, bandit_prior_means, bandit_prior_covs, discount, epsilon)
         #print(TOT_REWARDS)
 #        GRID_REWARDS[((i-1)*n_episodes+1):(i*n_episodes), :] = TOT_REWARDS
-        MEAN_REWARDS[i, :] = Vector([mean(TOT_REWARDS[:, t]) for t in 1:T])
-        MEAN_POST_MEANS[i, :, :, :] = TOT_POST_MEANS[1, :, :, :]
-        MEAN_POST_COVS[i, :, :, :, :] = TOT_POST_COVS[1, :, :, :, :]
+        #MEAN_REWARDS[i, :] = Vector([mean(TOT_REWARDS[:, t]) for t in 1:T])
+        MEAN_REWARDS[i, :] = TOT_REWARDS
+        #MEAN_POST_MEANS[i, :, :, :] = TOT_POST_MEANS
+        #MEAN_POST_COVS[i, :, :, :, :] = TOT_POST_COVS
 #        GRID_POST_MEANS[((i-1)*n_episodes+1):(i*n_episodes), :, :, :] = TOT_POST_MEANS
 #        GRID_POST_COVS[((i-1)*n_episodes+1):(i*n_episodes), :, :, :, :] = TOT_POST_COVS
 
@@ -90,7 +91,7 @@ function grid_contextual_bandit_simulator(n_points, action_function, T, rollout_
     end
 
 
-    return MEAN_REWARDS, MEAN_POST_MEANS, MEAN_POST_COVS
+    return MEAN_REWARDS, means, covs
 
 
 
@@ -166,9 +167,12 @@ function contextual_bandit_simulator(action_function, T, rollout_length, n_episo
 
     REWARDS = zeros(T, n_episodes)
     OPTREWARDS = zeros(T, n_episodes)
-    TOT_REWARDS = zeros(n_episodes, T)
-    TOT_POST_MEANS = zeros(n_episodes, T, bandit_count, context_dim)
-    TOT_POST_COVS = zeros(n_episodes, T, bandit_count, context_dim, context_dim)
+    #TOT_REWARDS = zeros(n_episodes, T)
+    #TOT_POST_MEANS = zeros(n_episodes, T, bandit_count, context_dim)
+    #TOT_POST_COVS = zeros(n_episodes, T, bandit_count, context_dim, context_dim)
+    TOT_REWARDS = zeros(T)
+    TOT_POST_MEANS = zeros(bandit_count, context_dim)
+    TOT_POST_COVS = zeros(bandit_count, context_dim, context_dim)
     ep_count = 1
     global_bandit_param = zeros(bandit_count, context_dim)
     #threadreps = zeros(Threads.nthreads())
@@ -183,9 +187,9 @@ function contextual_bandit_simulator(action_function, T, rollout_length, n_episo
         EPREWARDS, POST_MEANS, POST_COVS = ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim,        context_mean,context_sd, obs_sd, bandit_count, bandit_prior_means, bandit_prior_covs, discount, epsilon, global_bandit_param)
         ep_count += 1
 
-        TOT_REWARDS[ep, :] = EPREWARDS
-        TOT_POST_MEANS[ep, :, :, :] = POST_MEANS
-        TOT_POST_COVS[ep, :, :, :, :] = POST_COVS
+        TOT_REWARDS = ((ep-1) .* TOT_REWARDS .+ EPREWARDS) ./ ep
+        TOT_POST_MEANS = POST_MEANS[1, :, :]
+        TOT_POST_COVS = POST_COVS[1, :, :, :]
 
     end
     #print(threadreps)
@@ -291,16 +295,17 @@ for t in 1:100
     for bandit in 1:bandit_count
 
         output[t, :, (2+context_dim*(bandit-1)):(1+context_dim*bandit)] =
-            GRID_POST_MEANS[:, 1, bandit, :]
+            GRID_POST_MEANS[:, bandit, :]
 
         for j in 1:(n_points*1)
 
             #output[t, j, (2+context_dim*bandit_count+context_dim*(bandit-1)):(1+context_dim*bandit_count+context_dim*bandit)] = eigvals(GRID_POST_COVS[j, (T-t+1), bandit, :, :])
-            output[t, j, (2+context_dim*bandit_count+cov_vec_len*(bandit-1)):(1+context_dim*bandit_count+cov_vec_len*bandit)] = upper_triangular_vec(GRID_POST_COVS[j, 1, bandit, :, :])
+            output[t, j, (2+context_dim*bandit_count+cov_vec_len*(bandit-1)):(1+context_dim*bandit_count+cov_vec_len*bandit)] = upper_triangular_vec(GRID_POST_COVS[j, bandit, :, :])
 
         end
     end
 
-    CSV.write("/hpc/home/jml165/rl/valresults/results_$(idx)_$(t).csv", Tables.table(output[t, :, :]))
+    #CSV.write("/hpc/home/jml165/rl/valresults/results_$(idx)_$(t).csv", Tables.table(output[t, :, :]))
+    CSV.write("/hpc/group/laberlabs/jml165/valresults/results_$(idx)_$(t).csv", Tables.table(output[t, :, :]))
 
 end 

@@ -4,7 +4,7 @@
 #SBATCH --cpus-per-task 1
 #SBATCH --output="/hpc/home/jml165/slurmout/R-%A_%a.out"
 #SBATCH --error="/hpc/home/jml165/slurmout/R-%A_%a.err"
-#SBATCH --mem=8G
+#SBATCH --mem=32G
 #SBATCH --partition=common,scavenger
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=jml165@duke.edu

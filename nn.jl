@@ -5,7 +5,8 @@ using Flux.Data: DataLoader
 const idx = Base.parse(Int, ENV["SLURM_ARRAY_TASK_ID"])
 
     
-dat = CSV.File("/hpc/home/jml165/rl/valcombresults/results_$(idx).csv") |> Tables.matrix
+dat = CSV.File("/hpc/group/laberlabs/jml165/valcombresults/valcombresults_$(idx).csv") |> Tables.matrix
+#dat = CSV.File("/hpc/home/jml165/rl/valcombresults/valcombresults_$(idx).csv") |> Tables.matrix
 
 ncol = size(dat)[2]
 nrow = size(dat)[1]
@@ -21,9 +22,11 @@ batch_data = DataLoader((X_train, Y_train), batchsize = 128, shuffle = true)
 
 opt = Descent(.01)
 
-hidden_size = div(ncol-1, 2) + 2
+hidden_size = div(ncol-1, 2) * 8
 
 m = Chain(Dense(ncol - 1, hidden_size, σ), Dense(hidden_size, hidden_size, σ), Dense(hidden_size,div(hidden_size,2),σ), Dense(div(hidden_size,2), 1))
+
+#m = Chain(Dense(ncol - 1, hidden_size, σ), Dense(hidden_size, 1))
 loss(x,y) = Flux.Losses.mse(m(x),y)
 eval_loss(x,y) = mean(abs.((m(x) .- y) ./ y))
 #evalcb() = @show(loss(X_test, Y_test))

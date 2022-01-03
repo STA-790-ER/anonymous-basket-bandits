@@ -1,9 +1,9 @@
 #!/bin/bash
 
 rm -f ~/slurmout/*
-rm -rf ~/rl/valresults/
-mkdir ~/rl/valresults
-rm -f ~/rl/valcombresults/*.csv
+rm -rf /hpc/group/laberlabs/jml165/valresults/
+mkdir /hpc/group/laberlabs/jml165/valresults
+rm -f /hpc/group/laberlabs/jml165/valcombresults/*.csv
 
 sbatch ~/rl/lawson-bandits/val.sh
 #wait
