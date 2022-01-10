@@ -19,7 +19,7 @@ const bandit_count = 3
 const bandit_prior_mean = 0
 const bandit_prior_sd = 10
 
-const n_episodes = 50000
+const n_episodes = 100000
 
 const discount = 1.
 const epsilon = .01
@@ -35,7 +35,7 @@ const grid_num = 6
 const int_length = 2
 const n_grid_rollouts = 50
 
-const n_points = 5
+const n_points = 100
 
 ## SIMULATOR FUNCTION
 
@@ -62,7 +62,7 @@ function grid_contextual_bandit_simulator(n_points, action_function, T, rollout_
         for j in 1:bandit_count
             means[i, j, :] = rand(MvNormal(repeat([bandit_prior_mean], context_dim),
                                               Matrix((bandit_prior_sd^2)I,context_dim,context_dim)))
-            covs[i, j, :, :] = rand(InverseWishart(context_dim + 2, Matrix((bandit_prior_sd^2)I, context_dim, context_dim)))
+            covs[i, j, :, :] = rand() .* rand(InverseWishart(2*(context_dim + 4), Matrix((bandit_prior_sd^2)I, context_dim, context_dim)))
         end
 
     end
