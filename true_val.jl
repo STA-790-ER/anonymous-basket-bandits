@@ -51,7 +51,7 @@ function grid_contextual_bandit_simulator(n_points, action_function, T, rollout_
 
     means = zeros(n_points, bandit_count, context_dim)
     covs = zeros(n_points, bandit_count, context_dim, context_dim)
-
+    true_means = zeros(n_points, bandit_count, context_dim)
 #    GRID_REWARDS = zeros(n_episodes*n_points, T)
 #    GRID_POST_MEANS = zeros(n_episodes*n_points, T, bandit_count, context_dim)
 #    GRID_POST_COVS = zeros(n_episodes*n_points, T, bandit_count, context_dim, context_dim)
@@ -62,6 +62,11 @@ function grid_contextual_bandit_simulator(n_points, action_function, T, rollout_
         for j in 1:bandit_count
             means[i, j, :] = rand(MvNormal(repeat([bandit_prior_mean], context_dim),
                                               Matrix((bandit_prior_sd^2)I,context_dim,context_dim)))
+
+            
+            true_means[i, j, :] = rand(MvNormal(repeat([bandit_prior_mean], context_dim),
+                                              Matrix((bandit_prior_sd^2)I,context_dim,context_dim)))
+            
             covs[i, j, :, :] = rand() .* rand(InverseWishart(2*(context_dim + 4), Matrix((bandit_prior_sd^2)I, context_dim, context_dim)))
         end
 
@@ -71,9 +76,9 @@ function grid_contextual_bandit_simulator(n_points, action_function, T, rollout_
     for i in 1:n_points
         bandit_prior_means = means[i, :, :]
         bandit_prior_covs = covs[i, :, :, :]
-
+        bandit_true_means = true_means[i, :, :]
         TOT_REWARDS, TOT_POST_MEANS, TOT_POST_COVS = contextual_bandit_simulator(action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
-            context_sd, obs_sd, bandit_count, bandit_prior_means, bandit_prior_covs, discount, epsilon)
+            context_sd, obs_sd, bandit_count, bandit_true_means, bandit_prior_means, bandit_prior_covs, discount, epsilon)
         #print(TOT_REWARDS)
 #        GRID_REWARDS[((i-1)*n_episodes+1):(i*n_episodes), :] = TOT_REWARDS
         #MEAN_REWARDS[i, :] = Vector([mean(TOT_REWARDS[:, t]) for t in 1:T])
@@ -91,7 +96,7 @@ function grid_contextual_bandit_simulator(n_points, action_function, T, rollout_
     end
 
 
-    return MEAN_REWARDS, means, covs
+    return MEAN_REWARDS, true_means, means, covs
 
 
 
@@ -163,7 +168,7 @@ function ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n
 end
 
 function contextual_bandit_simulator(action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
-    context_sd, obs_sd, bandit_count, bandit_prior_means, bandit_prior_covs, discount, epsilon)
+    context_sd, obs_sd, bandit_count, bandit_true_means, bandit_prior_means, bandit_prior_covs, discount, epsilon)
 
     REWARDS = zeros(T, n_episodes)
     OPTREWARDS = zeros(T, n_episodes)
@@ -180,9 +185,14 @@ function contextual_bandit_simulator(action_function, T, rollout_length, n_episo
 
     for ep in 1:n_episodes
 
-        for bandit in 1:bandit_count
-	        global_bandit_param[bandit, :] = rand(MvNormal((bandit_prior_means[bandit,:]), (bandit_prior_covs[bandit,:,:])))
-        end
+
+        # IN THIS VERSION WE USE A TRUE BANDIT PARAM PER POINT WHICH IS STATIC ACROSS EPISODES
+        #for bandit in 1:bandit_count
+	    #    global_bandit_param[bandit, :] = rand(MvNormal((bandit_prior_means[bandit,:]), (bandit_prior_covs[bandit,:,:])))
+        #end
+
+        global_bandit_param = bandit_true_means
+        #############################################
 
         EPREWARDS, POST_MEANS, POST_COVS = ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim,        context_mean,context_sd, obs_sd, bandit_count, bandit_prior_means, bandit_prior_covs, discount, epsilon, global_bandit_param)
         ep_count += 1
@@ -260,7 +270,7 @@ end
 
 print("\n")
 
-@time GRID_REWARDS, GRID_POST_MEANS, GRID_POST_COVS = grid_contextual_bandit_simulator(n_points, greedy_policy, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
+@time GRID_REWARDS, GRID_TRUE_MEANS, GRID_POST_MEANS, GRID_POST_COVS = grid_contextual_bandit_simulator(n_points, greedy_policy, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
     context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
 
 #print(GRID_REWARDS)
@@ -268,7 +278,7 @@ print("\n")
 
 cov_vec_len = convert(Int64, (context_dim + 1) * context_dim / 2)
 
-output = zeros(T, n_points*1, 1 + (context_dim + cov_vec_len) * bandit_count)
+output = zeros(T, n_points*1, 1 + (2*context_dim + cov_vec_len) * bandit_count)
 
 upper_triangular_vec = function(M)
 
@@ -295,17 +305,19 @@ for t in 1:100
     for bandit in 1:bandit_count
 
         output[t, :, (2+context_dim*(bandit-1)):(1+context_dim*bandit)] =
-            GRID_POST_MEANS[:, bandit, :]
+            GRID_TRUE_MEANS[:, bandit, :]
 
+        output[t, :, (2 + context_dim * bandit_count + context_dim * (bandit-1)):(1 + context_dim * bandit_count + context_dim * bandit)] =
+            GRID_POST_MEANS[:, bandit, :]
         for j in 1:(n_points*1)
 
             #output[t, j, (2+context_dim*bandit_count+context_dim*(bandit-1)):(1+context_dim*bandit_count+context_dim*bandit)] = eigvals(GRID_POST_COVS[j, (T-t+1), bandit, :, :])
-            output[t, j, (2+context_dim*bandit_count+cov_vec_len*(bandit-1)):(1+context_dim*bandit_count+cov_vec_len*bandit)] = upper_triangular_vec(GRID_POST_COVS[j, bandit, :, :])
+            output[t, j, (2+2*context_dim*bandit_count+cov_vec_len*(bandit-1)):(1+2*context_dim*bandit_count+cov_vec_len*bandit)] = upper_triangular_vec(GRID_POST_COVS[j, bandit, :, :])
 
         end
     end
 
     #CSV.write("/hpc/home/jml165/rl/valresults/results_$(idx)_$(t).csv", Tables.table(output[t, :, :]))
-    CSV.write("/hpc/group/laberlabs/jml165/valresults/results_$(idx)_$(t).csv", Tables.table(output[t, :, :]))
+    CSV.write("/hpc/group/laberlabs/jml165/truevalresults/results_$(idx)_$(t).csv", Tables.table(output[t, :, :]))
 
 end 

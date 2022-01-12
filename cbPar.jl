@@ -18,13 +18,13 @@ const bandit_prior_mean = 0
 const bandit_prior_sd = 10
 
 const T = 100
-const n_episodes = 3
+const n_episodes = 10
 
 const discount = 1.
 const epsilon = .01
 
 const rollout_length = 5
-const n_rollouts = 50000
+const n_rollouts = 10000
 const n_opt_rollouts = 10
 const n_spsa_iter = 10
 
@@ -42,6 +42,8 @@ neural_net_list = []
 scale_list = []
 
 
+
+## NEED TO DECIDE WHETHER TRUE IS USED
 for i in 1:T
     @load "/hpc/home/jml165/rl/valneuralnets/valnn_$(i).bson" m
     scales = CSV.File("/hpc/home/jml165/rl/neuralnetscales/scales_$(i).csv", header = false) |> Tables.matrix
@@ -515,9 +517,21 @@ function val_greedy_rollout(T_remainder, rollout_length, lambda, context_dim, co
         action = curr_ind
         #end
 
-        true_expected_reward = true_expected_rewards[action]
+
+
+
+        # TRUE PARAM VERSION
+        #true_expected_reward = true_expected_rewards[action]
+        #disc_reward += true_expected_reward * discount^(t-1)
+        #obs = randn() * obs_sd + true_expected_reward
+        
+        # UNKNOWN PARAM VERSION
+        true_expected_reward = dot(bandit_posterior_means[action,:], context)
         disc_reward += true_expected_reward * discount^(t-1)
-        obs = randn() * obs_sd + true_expected_reward
+        obs = randn() * sqrt(obs_sd^2 + dot(context, bandit_posterior_covs[action,:,:], context)) + true_expected_reward
+        
+        
+        
         #old_cov = temp_post_covs[action, :, :]
         old_cov .= bandit_posterior_covs[action, :, :]
         
@@ -567,6 +581,12 @@ function val_greedy_rollout(T_remainder, rollout_length, lambda, context_dim, co
 
 
     if truncation_length > 0
+        
+        
+        #### SWITCHED TO TRUE VALUE NEURAL NETWORK AS TEST
+        
+        #input_vec = Vector(vec(bandit_param'))
+        #append!(input_vec, Vector(vec(bandit_posterior_means')))
         input_vec = Vector(vec(bandit_posterior_means'))
         append!(input_vec, vcat([upper_triangular_vec(bandit_posterior_covs[a, :, :]) for a in 1:bandit_count]...))
         
@@ -927,9 +947,21 @@ function val_greedy_rollout_policy(t, T, bandit_count, context, bandit_posterior
 		    bandit_param[bandit,:] .= rand(MvNormal(temp_bandit_mean, temp_bandit_cov))
         end
 	    mul!(true_expected_rewards, bandit_param, context)
-        true_expected_reward = true_expected_rewards[bandit]
-        obs = randn() * obs_sd + true_expected_reward
-	    copy!(roll_old_cov, (@view temp_post_covs[bandit, :, :]))
+        
+        
+        
+	    
+        
+        # TRUE PARAM VERSION
+        #true_expected_reward = true_expected_rewards[action]
+        #obs = randn() * obs_sd + true_expected_reward
+        
+        # UNKNOWN PARAM VERSION
+        true_expected_reward = dot(bandit_posterior_means[bandit,:], context)
+        obs = randn() * sqrt(obs_sd^2 + dot(context, bandit_posterior_covs[bandit,:,:], context)) + true_expected_reward
+        
+        
+        copy!(roll_old_cov, (@view temp_post_covs[bandit, :, :]))
 	    mul!(roll_CovCon, roll_old_cov, context)
 	    roll_CovCon ./= obs_sd
 
@@ -1404,8 +1436,8 @@ function better_opt_lambda_policy(t, T, bandit_count, context, bandit_posterior_
     if mean_max_bandit == var_max_bandit
     	return mean_max_bandit
     end
-    lambda_param = [.9, .5]
-    lambda_trans = log.(lambda_param ./ (1 .- lambda_param))
+    lambda_param = [1, 1, 2]
+    lambda_trans = log.(lambda_param)
     BANDIT_REWARDS = zeros(n_rollouts)
 
     ################################################################
@@ -1414,13 +1446,13 @@ function better_opt_lambda_policy(t, T, bandit_count, context, bandit_posterior_
 
     for iter in 1:n_spsa_iter
 
-        delta_n = rand([-1, 1], 2)
+        delta_n = rand([-1, 1], 3)
         c_n = 1 / iter^(.3)
         a_n = 1 / iter
         lambda_trans_up = lambda_trans + c_n .* delta_n
         lambda_trans_dn = lambda_trans - c_n .* delta_n
-        lambda_up = 1 ./ (1 .+ exp.(-lambda_trans_up))
-        lambda_dn = 1 ./ (1 .+ exp.(-lambda_trans_dn))
+        lambda_up = exp.(lambda_trans_up)
+        lambda_dn = exp.(lambda_trans_dn)
 
         MEAN_UP_REWARD = 0
         MEAN_DOWN_REWARD = 0
@@ -1440,8 +1472,8 @@ function better_opt_lambda_policy(t, T, bandit_count, context, bandit_posterior_
 		        bandit_param[bandit,:] .= rand(MvNormal(temp_bandit_mean, temp_bandit_cov))
             end
 
-            lambda = lambda_up[1] .* (lambda_up[2] .^ (0:(T-t)))
-            rollout_value = lambda_rollout(T-t, rollout_length+1, lambda, context_dim, context_mean,
+            lambda_param = lambda_up
+            rollout_value = better_rollout(T-t, t, rollout_length, lambda_param, context_dim, context_mean,
                 context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
 		        roll_context, roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
             # up_reward = predictive_rewards[bandit] + discount * rollout_value
@@ -1461,8 +1493,8 @@ function better_opt_lambda_policy(t, T, bandit_count, context, bandit_posterior_
 		        bandit_param[bandit,:] .= rand(MvNormal(temp_bandit_mean, temp_bandit_cov))
             end
 
-            lambda = lambda_dn[1] .* (lambda_dn[2] .^ (0:(T-t)))
-            rollout_value = lambda_rollout(T-t, rollout_length+1, lambda, context_dim, context_mean,
+            lambda_param = lambda_dn
+            rollout_value = better_rollout(T-t, t, rollout_length, lambda_param, context_dim, context_mean,
                 context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
 		        roll_context, roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
             # down_reward = predictive_rewards[bandit] + discount * rollout_value
@@ -1484,13 +1516,12 @@ function better_opt_lambda_policy(t, T, bandit_count, context, bandit_posterior_
 
 
     # set final lambda parameter
-    lambda_param = 1 ./ (1 .+ exp.(-lambda_trans))
+    lambda_param = exp.(lambda_trans)
 
 
-    println(lambda_param[1],", ", lambda_param[2])
+    println(lambda_param[1],", ", lambda_param[2],", ", lambda_param[3])
     flush(stdout)
 
-    lambda = lambda_param[1] .* (lambda_param[2] .^ (0:(T-t)))
     # END OPTIMIZATION OF LAMBDA
 
 
@@ -1498,68 +1529,74 @@ function better_opt_lambda_policy(t, T, bandit_count, context, bandit_posterior_
         BANDIT_REWARDS = 0
         for roll in 1:n_rollouts
 
-	    fill!(roll_context, 0.0)
-	    fill!(roll_true_expected_rewards, 0.0)
-	    fill!(roll_CovCon, 0.0)
-	    fill!(roll_old_cov, 0.0)
-	    fill!(roll_SigInvMu, 0.0)
+    	    fill!(roll_context, 0.0)
+	        fill!(roll_true_expected_rewards, 0.0)
+	        fill!(roll_CovCon, 0.0)
+	        fill!(roll_old_cov, 0.0)
+	        fill!(roll_SigInvMu, 0.0)
 
 
-	    copy!(temp_post_means, bandit_posterior_means)
+	        copy!(temp_post_means, bandit_posterior_means)
             copy!(temp_post_covs, bandit_posterior_covs)
             #bandit_param = zeros(bandit_count, context_dim)
             for bandit in 1:bandit_count
-	        copy!(temp_bandit_mean, (@view bandit_posterior_means[bandit,:]))
-	        copy!(temp_bandit_cov, (@view bandit_posterior_covs[bandit,:,:]))
-		bandit_param[bandit,:] .= rand(MvNormal(temp_bandit_mean, temp_bandit_cov))
+                copy!(temp_bandit_mean, (@view bandit_posterior_means[bandit,:]))
+                copy!(temp_bandit_cov, (@view bandit_posterior_covs[bandit,:,:]))
+                bandit_param[bandit,:] .= rand(MvNormal(temp_bandit_mean, temp_bandit_cov))
             end
-	    mul!(true_expected_rewards, bandit_param, context)
-            true_expected_reward = true_expected_rewards[bandit]
-            obs = randn() * obs_sd + true_expected_reward
-            #old_cov = temp_post_covs[bandit, :, :]
-	    #old_precision = inv(temp_post_covs[bandit, :, :])
-	    copy!(roll_old_cov, (@view temp_post_covs[bandit, :, :]))
-	    mul!(roll_CovCon, roll_old_cov, context)
-	    roll_CovCon ./= obs_sd
-            #bandit_posterior_covs[action, :, :] = inv(context * context' / obs_sd^2 + old_precision)
+            # TRUE PARAM VERSION 
+            
+            #mul!(true_expected_rewards, bandit_param, context)
+            #true_expected_reward = true_expected_rewards[bandit]
+            #disc_reward += true_expected_reward * discount^(t-1)
+            #obs = randn() * obs_sd + true_expected_reward
+            
+            # UNKNOWN PARAM VERSION
+            true_expected_reward = dot(bandit_posterior_means[bandit,:], context)
+            disc_reward += true_expected_reward * discount^(t-1)
+            obs = randn() * sqrt(obs_sd^2 + dot(context, bandit_posterior_covs[bandit,:,:], context)) + true_expected_reward
+            
+            
+            
+            copy!(roll_old_cov, (@view temp_post_covs[bandit, :, :]))
+            mul!(roll_CovCon, roll_old_cov, context)
+            roll_CovCon ./= obs_sd
 
-
-            # new implementation
-
-	    dividy = 1 + dot(context, roll_old_cov, context)
+            dividy = 1 + dot(context, roll_old_cov, context)
             for i in 1:context_dim
-	        for j in 1:context_dim
-                     temp_post_covs[bandit,j,i] = roll_old_cov[j,i] - roll_CovCon[j]*roll_CovCon[i] / dividy
-	        end
-	    end
+                for j in 1:context_dim
+                    temp_post_covs[bandit,j,i] = roll_old_cov[j,i] - roll_CovCon[j]*roll_CovCon[i] / dividy
+                end
+            end
 
 
-            #bandit_posterior_covs[action, :, :] .= old_cov .- CovCon .* CovCon' ./ (1 + dot(context, old_cov, context))
-            #bandit_posterior_covs[action, :, :] .= ((bandit_posterior_covs[action, :, :]) + (bandit_posterior_covs[action, :, :])') ./ 2
-
-	    for i in 1:context_dim
-	        for j in 1:(i-1)
-		    temp_post_covs[bandit,i,j] = (temp_post_covs[bandit,i,j]+temp_post_covs[bandit,j,i])/2
-		    temp_post_covs[bandit,j,i] = temp_post_covs[bandit,i,j]
-		end
-	    end
+            for i in 1:context_dim
+                for j in 1:(i-1)
+                    temp_post_covs[bandit,i,j] = (temp_post_covs[bandit,i,j]+temp_post_covs[bandit,j,i])/2
+                    temp_post_covs[bandit,j,i] = temp_post_covs[bandit,i,j]
+                end
+            end
 
 
             roll_SigInvMu .= roll_old_cov \ @view temp_post_means[bandit,:]
-	    roll_SigInvMu .+= context .* obs ./ obs_sd.^2
-	    mul!((@view temp_post_means[bandit,:]), (@view temp_post_covs[bandit,:,:]), roll_SigInvMu)
+            roll_SigInvMu .+= context .* obs ./ obs_sd.^2
+            mul!((@view temp_post_means[bandit,:]), (@view temp_post_covs[bandit,:,:]), roll_SigInvMu)
 
 
-
-            rollout_value = lambda_rollout(T-t, rollout_length, lambda, context_dim, context_mean,
+            rollout_value = better_rollout(T-t, t, rollout_length, lambda_param, context_dim, context_mean,
                 context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
-		roll_context, roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
-	    BANDIT_REWARDS = (BANDIT_REWARDS * (roll-1) + predictive_rewards[bandit] + discount * rollout_value) / roll
+                roll_context, roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
+
+            BANDIT_REWARDS = (BANDIT_REWARDS * (roll-1) + predictive_rewards[bandit] + discount * rollout_value) / roll
 
         end
+
         BANDIT_VALUES[bandit] = BANDIT_REWARDS
+    
     end
+    
     return findmax(BANDIT_VALUES)[2]
+
 end
 
 function bayesopt_lambda_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
