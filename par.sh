@@ -13,4 +13,4 @@
 module purge
 module load Julia/1.6.1
 
-julia -t 1 ~/rl/lawson-bandits/cbPar.jl
+julia -t 1 ~/rl/lawson-bandits/main.jl

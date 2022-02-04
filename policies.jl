@@ -1,167 +1,4 @@
 
-using LinearAlgebra, Statistics, Plots, Distributions, StatsBase, DelimitedFiles, CSV, Tables, Random, BenchmarkTools
-
-using BayesianOptimization, GaussianProcesses, Distributions
-using Flux
-using BSON: @load
-BLAS.set_num_threads(1)
-
-#cnst mts = MersenneTwister.(1:Threads.nthreads())
-# Parameters
-const context_dim = 2
-const context_mean = 0
-const context_sd = 1
-const obs_sd = 1
-
-const bandit_count = 3
-const bandit_prior_mean = 0
-const bandit_prior_sd = 10
-
-
-# SIMULATION HORIZON
-const T = 100
-
-# NUMBER OF GLOBAL SIMULATION EPISODES (PER INDEX JOB)
-const n_episodes = 2
-
-# DISCOUNT PARAMETER
-const discount = 1.
-
-# PARAMETER FOR EPSILON GREEDY POLICY
-const epsilon = .01
-
-# PARAMETERS FOR ALL ROLLOUT METHODS
-const rollout_length = 5
-const n_rollouts = 20000
-
-# PARAMETERS FOR SPSA OPTIMIZATION METHOD
-const n_opt_rollouts = 20000
-const n_spsa_iter = 300
-
-
-
-## PARAMETERS FOR GRID OPTIMIZATION METHOD
-const n_grid_iter = 7
-const grid_ratio = 2
-const grid_num = 6
-const int_length = 2
-const n_grid_rollouts = 50
-
-### NON ADAPTIVE GRID (n_opt_rollouts used for opt rollouts)
-#grid_margin_1 = [0, .5, 1, 2, 4]
-#grid_margin_2 = [0, .5, 1, 2]
-#grid_margin_3 = [.5, 1, 2]
-
-grid_margin_1 = [0., 1.]
-grid_margin_2 = [0., 1.]
-grid_margin_3 = [1., 2.]
-
-## SIMULATOR FUNCTION
-
-
-const idx = Base.parse(Int, ENV["SLURM_ARRAY_TASK_ID"])
-
-neural_net_list = []
-scale_list = []
-
-
-
-## NEED TO DECIDE WHETHER TRUE IS USED
-for i in 1:T
-    @load "/hpc/home/jml165/rl/valneuralnets/valnn_$(i).bson" m
-    scales = CSV.File("/hpc/home/jml165/rl/neuralnetscales/scales_$(i).csv", header = false) |> Tables.matrix
-    push!(neural_net_list, m)
-    push!(scale_list, scales)
-end
-
-
-upper_triangular_vec = function(M)
-
-    d = size(M)[1]
-
-    output = zeros(convert(Int64,(d+1) * d / 2))
-
-    count = 1
-    for i in 1:d
-        for j in i:d
-            output[count] = M[i, j]
-            count += 1
-        end
-    end
-        return output
-end
-
-
-function ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
-    context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon, global_bandit_param)
-        
-    
-        bandit_posterior_means = zeros(bandit_count, context_dim)
-        bandit_posterior_covs = zeros(bandit_count, context_dim, context_dim)
-    	bandit_param = copy(global_bandit_param)
-        true_bandit_param = copy(global_bandit_param)
-        EPREWARDS = zeros(T)
-	    EPOPTREWARDS = zeros(T)
-
-        for i in 1:bandit_count
-            bandit_posterior_means[i, :] = repeat([bandit_prior_mean], context_dim)
-            bandit_posterior_covs[i, :, :] = Diagonal(repeat([bandit_prior_sd^2], context_dim))
-        end
-        
-        for t in 1:T
-            context = randn(context_dim) * context_sd .+ context_mean
-            true_expected_rewards = true_bandit_param * context
-            #true_expected_rewards = bandit_posterior_means * context
-            action = action_function(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
-            true_expected_reward = true_expected_rewards[action]
-            EPREWARDS[t] = true_expected_reward
-            EPOPTREWARDS[t] = maximum(true_expected_rewards)
-            #obs = randn() * sqrt(obs_sd^2 + dot(context, bandit_posterior_covs[action,:,:],context)) + true_expected_reward
-            obs = randn() * obs_sd + true_expected_reward
-	        old_cov = bandit_posterior_covs[action, :, :]
-	        CovCon = old_cov * context ./ obs_sd
-	        #bandit_posterior_covs[action, :, :] = inv(context * context' / obs_sd^2 + old_precision)
-	        bandit_posterior_covs[action, :, :] = old_cov - CovCon * CovCon' ./ (1 + dot(context, old_cov, context))
-	        bandit_posterior_covs[action, :, :] = ((bandit_posterior_covs[action,:,:]) + bandit_posterior_covs[action,:,:]')/2
-	        bandit_posterior_means[action, :] = (bandit_posterior_covs[action, :, :]) * (old_cov \ (bandit_posterior_means[action,:]) + context * obs / obs_sd^2)
-
-	        println("Ep: ", ep, " - ", t, " of ", T, " for ", String(Symbol(action_function)))
-            flush(stdout)
-
-
-        end
-	return EPREWARDS, EPOPTREWARDS
-end
-
-function contextual_bandit_simulator(action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
-    context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
-
-    REWARDS = zeros(T, n_episodes)
-    OPTREWARDS = zeros(T, n_episodes)
-    ep_count = 1
-    
-
-    ## USING BAYESIAN FORMULATION FOR FAIR COMPARISON
-    #global_bandit_param = [1 0; 0 1; 2 -1]
-    global_bandit_param = rand(Normal(bandit_prior_mean, bandit_prior_sd), bandit_count, context_dim)
-    
-    
-    #threadreps = zeros(Threads.nthreads())
-
-
-    for ep in 1:n_episodes
-        EPREWARDS, EPOPTREWARDS = ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
-                                       context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon, global_bandit_param)
-        ep_count += 1
-	REWARDS[:, ep] = EPREWARDS
-	OPTREWARDS[:, ep] = EPOPTREWARDS
-    end
-    #print(threadreps)
-    return REWARDS', OPTREWARDS'
-end
-
-## POLICY FUNCTIONS
-
 # Greedy
 function greedy_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
     val, action = findmax(bandit_posterior_means * context)
@@ -216,567 +53,6 @@ function squarecb_policy(t, T, bandit_count, context, bandit_posterior_means, ba
     selection_probs[opt_id] = 1 - sum(selection_probs)
 
     return sample(weights(selection_probs))
-end
-
-function lambda_rollout(T, rollout_length, context, use_context, lambda, context_dim, context_mean,
-    context_sd, obs_sd, bandit_count, discount, bandit_posterior_covs, bandit_posterior_means, bandit_param,
-	true_expected_rewards, CovCon, old_cov, SigInvMu)
-
-    #temp_post_covs = bandit_posterior_covs
-    #temp_post_means = bandit_posterior_means
-    disc_reward = 0
-    #fill!(context, 0.0)
-    fill!(true_expected_rewards, 0.0)
-    fill!(CovCon, 0.0)
-    fill!(old_cov,0.0)
-    fill!(SigInvMu,0.0)
-
-    for t in 1:min(T, rollout_length)
-
-        #context_seed = rand(1:context_dim)
-        #fill!(context, zero(context[1]))
-        #context[context_seed] = 1
-
-        if (t > 1) || !use_context
-            context = randn(context_dim) * context_sd .+ context_mean
-        end
-
-        mul!(true_expected_rewards, bandit_param, context)
-        # alt action find
-        curr_ind = 1
-        curr_max = dot((@view bandit_posterior_means[1,:]),context) * (1-lambda[t]) + lambda[t] * dot(context, (@view bandit_posterior_covs[1,:,:]), context)
-        for i in 2:bandit_count
-            candidate_max = dot((@view bandit_posterior_means[i,:]),context) * (1-lambda[t]) + lambda[t] * dot(context, (@view bandit_posterior_covs[i,:,:]), context)
-            if candidate_max > curr_max
-                curr_ind = i
-                curr_max = candidate_max
-            end
-        end
-
-        action = curr_ind
-        #end
-
-        true_expected_reward = true_expected_rewards[action]
-        disc_reward += true_expected_reward * discount^(t-1)
-        obs = randn() * obs_sd + true_expected_reward
-        #old_cov = temp_post_covs[action, :, :]
-        old_cov .= bandit_posterior_covs[action, :, :]
-        #CovCon .= old_cov * context ./ obs_sd
-        mul!(CovCon, old_cov, context)
-        CovCon ./= obs_sd
-        #bandit_posterior_covs[action, :, :] = inv(context * context' / obs_sd^2 + old_precision)
-
-        dividy = 1 + dot(context ./ obs_sd, old_cov, context ./ obs_sd)
-        for i in 1:context_dim
-            for j in 1:context_dim
-                bandit_posterior_covs[action,j,i] = old_cov[j,i] - CovCon[j]*CovCon[i] / dividy
-            end
-        end
-
-        #bandit_posterior_covs[action, :, :] .= old_cov .- CovCon .* CovCon' ./ (1 + dot(context, old_cov, context))
-        #bandit_posterior_covs[action, :, :] .= ((bandit_posterior_covs[action, :, :]) + (bandit_posterior_covs[action, :, :])') ./ 2
-
-	    for i in 1:context_dim
-		    for j in 1:(i-1)
-			    bandit_posterior_covs[action,i,j] = (bandit_posterior_covs[action,i,j]+bandit_posterior_covs[action,j,i])/2
-			    bandit_posterior_covs[action,j,i] = bandit_posterior_covs[action,i,j]
-		    end
-	    end
-
-        SigInvMu .= old_cov \ @view bandit_posterior_means[action,:]
-	    SigInvMu .+= context .* obs ./ obs_sd.^2
-	    mul!((@view bandit_posterior_means[action,:]), (@view bandit_posterior_covs[action,:,:]), SigInvMu)
-	    #bandit_posterior_means[action, :] .= (bandit_posterior_covs[action, :, :]) * (old_cov \ (bandit_posterior_means[action,:]) + context * obs / obs_sd^2)
-    end
-
-    return disc_reward
-
-end
-
-function lambda_mean_rollout(T_remainder, rollout_length, context, use_context, lambda, context_dim, context_mean,
-    context_sd, obs_sd, bandit_count, discount, bandit_posterior_covs, bandit_posterior_means, bandit_param,
-	true_expected_rewards, CovCon, old_cov, SigInvMu)
-
-    #temp_post_covs = bandit_posterior_covs
-    #temp_post_means = bandit_posterior_means
-    disc_reward = 0
-    #fill!(context, 0.0)
-    fill!(true_expected_rewards, 0.0)
-    fill!(CovCon, 0.0)
-    fill!(old_cov,0.0)
-    fill!(SigInvMu,0.0)
-
-    for t in 1:min(T_remainder, rollout_length)
-
-        #context_seed = rand(1:context_dim)
-        #fill!(context, zero(context[1]))
-        #context[context_seed] = 1
-
-
-        if (t > 1) || !use_context
-            context = randn(context_dim) * context_sd .+ context_mean
-        end
-        mul!(true_expected_rewards, bandit_param, context)
-        #context = randn(context_dim) * context_sd .+ context_mean
-
-
-        #mean_max_bandit = 1
-        #mean_max_val = dot((@view bandit_posterior_means[1,:]), context)
-        #
-        #var_max_bandit = 1
-        #var_max_val = dot(context, (@view bandit_posterior_covs[1,:,:]), context)
-#
-        #for i = 2:bandit_count
-            #
-            #new_val = dot((@view bandit_posterior_means[i,:]),context)
-            #if new_val > mean_max_val
-                #mean_max_val = new_val
-                #mean_max_bandit = i
-            #end
-#
-            #new_val = dot(context, (@view bandit_posterior_covs[i, :, :]), context)
-#
-            #if new_val > var_max_val
-                #var_max_val = new_val
-                #var_max_bandit = i
-            #end
-        #end
-#
-        #if mean_max_bandit == var_max_bandit
-        #
-            #action = mean_max_bandit
-#
-        #else
-        # alt action find
-        curr_ind = 1
-        curr_max = dot((@view bandit_posterior_means[1,:]),context) * (1-lambda[t]) + lambda[t] * max(1,T - T_remainder + t - 1) * dot(context, (@view bandit_posterior_covs[1,:,:]), context)
-        for i in 2:bandit_count
-            candidate_max = dot((@view bandit_posterior_means[i,:]),context) * (1-lambda[t]) + lambda[t] * max(1,T - T_remainder + t - 1) * dot(context, (@view bandit_posterior_covs[i,:,:]), context)
-            if candidate_max > curr_max
-                curr_ind = i
-                curr_max = candidate_max
-            end
-        end
-
-        action = curr_ind
-        #end
-
-        true_expected_reward = true_expected_rewards[action]
-        disc_reward += true_expected_reward * discount^(t-1)
-        obs = randn() * obs_sd + true_expected_reward
-        #old_cov = temp_post_covs[action, :, :]
-        old_cov .= bandit_posterior_covs[action, :, :]
-        #CovCon .= old_cov * context ./ obs_sd
-        mul!(CovCon, old_cov, context)
-        CovCon ./= obs_sd
-        #bandit_posterior_covs[action, :, :] = inv(context * context' / obs_sd^2 + old_precision)
-
-        dividy = 1 + dot(context ./ obs_sd, old_cov, context ./ obs_sd)
-        for i in 1:context_dim
-            for j in 1:context_dim
-                bandit_posterior_covs[action,j,i] = old_cov[j,i] - CovCon[j]*CovCon[i] / dividy
-            end
-        end
-
-        #bandit_posterior_covs[action, :, :] .= old_cov .- CovCon .* CovCon' ./ (1 + dot(context, old_cov, context))
-        #bandit_posterior_covs[action, :, :] .= ((bandit_posterior_covs[action, :, :]) + (bandit_posterior_covs[action, :, :])') ./ 2
-
-	    for i in 1:context_dim
-		    for j in 1:(i-1)
-			    bandit_posterior_covs[action,i,j] = (bandit_posterior_covs[action,i,j]+bandit_posterior_covs[action,j,i])/2
-			    bandit_posterior_covs[action,j,i] = bandit_posterior_covs[action,i,j]
-		    end
-	    end
-
-        SigInvMu .= old_cov \ @view bandit_posterior_means[action,:]
-	    SigInvMu .+= context .* obs ./ obs_sd.^2
-	    mul!((@view bandit_posterior_means[action,:]), (@view bandit_posterior_covs[action,:,:]), SigInvMu)
-	    #bandit_posterior_means[action, :] .= (bandit_posterior_covs[action, :, :]) * (old_cov \ (bandit_posterior_means[action,:]) + context * obs / obs_sd^2)
-    end
-
-    return disc_reward
-
-end
-
-function greedy_rollout(T_remainder, rollout_length, lambda, context_dim, context_mean,
-    context_sd, obs_sd, bandit_count, discount, bandit_posterior_covs, bandit_posterior_means, bandit_param,
-	context, true_expected_rewards, CovCon, old_cov, SigInvMu)
-
-    disc_reward = 0
-    fill!(context, 0.0)
-    fill!(true_expected_rewards, 0.0)
-    fill!(CovCon, 0.0)
-    fill!(old_cov,0.0)
-    fill!(SigInvMu,0.0)
-
-    for t in 1:min(T_remainder, rollout_length)
-
-        context_seed = rand(1:context_dim)
-        fill!(context, zero(context[1]))
-        context[context_seed] = 1
-        mul!(true_expected_rewards, bandit_param, context)
-
-
-        context = randn(context_dim) * context_sd .+ context_mean
-
-
-        curr_ind = 1
-        curr_max = dot((@view bandit_posterior_means[1,:]),context)
-        for i in 2:bandit_count
-            candidate_max = dot((@view bandit_posterior_means[i,:]),context)
-            if candidate_max > curr_max
-                curr_ind = i
-                curr_max = candidate_max
-            end
-        end
-
-        action = curr_ind
-        #end
-
-        true_expected_reward = true_expected_rewards[action]
-        disc_reward += true_expected_reward * discount^(t-1)
-        obs = randn() * obs_sd + true_expected_reward
-        #old_cov = temp_post_covs[action, :, :]
-        old_cov .= bandit_posterior_covs[action, :, :]
-        #CovCon .= old_cov * context ./ obs_sd
-        mul!(CovCon, old_cov, context)
-        CovCon ./= obs_sd
-        #bandit_posterior_covs[action, :, :] = inv(context * context' / obs_sd^2 + old_precision)
-
-        dividy = 1 + dot(context ./ obs_sd, old_cov, context ./ obs_sd)
-        for i in 1:context_dim
-            for j in 1:context_dim
-                bandit_posterior_covs[action,j,i] = old_cov[j,i] - CovCon[j]*CovCon[i] / dividy
-            end
-        end
-
-        #bandit_posterior_covs[action, :, :] .= old_cov .- CovCon .* CovCon' ./ (1 + dot(context, old_cov, context))
-        #bandit_posterior_covs[action, :, :] .= ((bandit_posterior_covs[action, :, :]) + (bandit_posterior_covs[action, :, :])') ./ 2
-
-	    for i in 1:context_dim
-		    for j in 1:(i-1)
-			    bandit_posterior_covs[action,i,j] = (bandit_posterior_covs[action,i,j]+bandit_posterior_covs[action,j,i])/2
-			    bandit_posterior_covs[action,j,i] = bandit_posterior_covs[action,i,j]
-		    end
-	    end
-
-        SigInvMu .= old_cov \ @view bandit_posterior_means[action,:]
-	    SigInvMu .+= context .* obs ./ obs_sd.^2
-	    mul!((@view bandit_posterior_means[action,:]), (@view bandit_posterior_covs[action,:,:]), SigInvMu)
-	    #bandit_posterior_means[action, :] .= (bandit_posterior_covs[action, :, :]) * (old_cov \ (bandit_posterior_means[action,:]) + context * obs / obs_sd^2)
-    end
-
-    return disc_reward
-
-end
-
-
-function val_greedy_rollout(T_remainder, rollout_length, lambda, context_dim, context_mean,
-    context_sd, obs_sd, bandit_count, discount, bandit_posterior_covs, bandit_posterior_means, bandit_param,
-	context, true_expected_rewards, CovCon, old_cov, SigInvMu)
-
-    disc_reward = 0
-    fill!(context, 0.0)
-    fill!(true_expected_rewards, 0.0)
-    fill!(CovCon, 0.0)
-    fill!(old_cov,0.0)
-    fill!(SigInvMu,0.0)
-    
-    truncation_length = T_remainder - min(T_remainder, rollout_length)
-
-    for t in 1:min(T_remainder, rollout_length)
-
-        context_seed = rand(1:context_dim)
-        fill!(context, zero(context[1]))
-        context[context_seed] = 1
-        mul!(true_expected_rewards, bandit_param, context)
-
-
-        context = randn(context_dim) * context_sd .+ context_mean
-
-
-
-        curr_ind = 1
-        curr_max = dot((@view bandit_posterior_means[1,:]),context)
-        for i in 2:bandit_count
-            candidate_max = dot((@view bandit_posterior_means[i,:]),context)
-            if candidate_max > curr_max
-                curr_ind = i
-                curr_max = candidate_max
-            end
-        end
-
-        action = curr_ind
-        #end
-
-
-
-
-        # TRUE PARAM VERSION
-        #true_expected_reward = true_expected_rewards[action]
-        #disc_reward += true_expected_reward * discount^(t-1)
-        #obs = randn() * obs_sd + true_expected_reward
-        
-        # UNKNOWN PARAM VERSION
-        true_expected_reward = dot(bandit_posterior_means[action,:], context)
-        disc_reward += true_expected_reward * discount^(t-1)
-        obs = randn() * sqrt(obs_sd^2 + dot(context, bandit_posterior_covs[action,:,:], context)) + true_expected_reward
-        
-        
-        
-        #old_cov = temp_post_covs[action, :, :]
-        old_cov .= bandit_posterior_covs[action, :, :]
-        
-
-        #print("Context: $(context)\n")
-        #print("Obs: $(obs)\n")
-        #print("Old Cov: $(old_cov)\n")
-        #print("Old Mean: $(bandit_posterior_means[action, :])\n")
-
-
-        #CovCon .= old_cov * context ./ obs_sd
-        mul!(CovCon, old_cov, context)
-        CovCon ./= obs_sd
-        #bandit_posterior_covs[action, :, :] = inv(context * context' / obs_sd^2 + old_precision)
-
-        dividy = 1 + dot(context ./ obs_sd, old_cov, context ./ obs_sd)
-        for i in 1:context_dim
-            for j in 1:context_dim
-                bandit_posterior_covs[action,j,i] = old_cov[j,i] - CovCon[j]*CovCon[i] / dividy
-            end
-        end
-
-
-        #Checking that computations are correct.
-        #bandit_posterior_covs[action, :, :] .= old_cov .- CovCon .* CovCon' ./ (1 + dot(context, old_cov, context))
-        #bandit_posterior_covs[action, :, :] .= ((bandit_posterior_covs[action, :, :]) + (bandit_posterior_covs[action, :, :])') ./ 2
-
-	    for i in 1:context_dim
-		    for j in 1:(i-1)
-			    bandit_posterior_covs[action,i,j] = (bandit_posterior_covs[action,i,j]+bandit_posterior_covs[action,j,i])/2
-			    bandit_posterior_covs[action,j,i] = bandit_posterior_covs[action,i,j]
-		    end
-	    end
-
-        SigInvMu .= old_cov \ @view bandit_posterior_means[action,:]
-	    SigInvMu .+= context .* obs ./ obs_sd.^2
-	    mul!((@view bandit_posterior_means[action,:]), (@view bandit_posterior_covs[action,:,:]), SigInvMu)
-	    
-        
-
-        #Checking that computations are correct
-        #print("New Cov: $(bandit_posterior_covs[action,:,:])\n")
-        #print("New Mean: $(bandit_posterior_means[action, :, :])\n")
-        
-        #bandit_posterior_means[action, :] .= (bandit_posterior_covs[action, :, :]) * (old_cov \ (bandit_posterior_means[action,:]) + context * obs / obs_sd^2)
-    end
-
-
-    if truncation_length > 0
-        
-        
-        #### SWITCHED TO TRUE VALUE NEURAL NETWORK AS TEST
-        
-        #input_vec = Vector(vec(bandit_param'))
-        #append!(input_vec, Vector(vec(bandit_posterior_means')))
-        input_vec = Vector(vec(bandit_posterior_means'))
-        append!(input_vec, vcat([upper_triangular_vec(bandit_posterior_covs[a, :, :]) for a in 1:bandit_count]...))
-        
-        scaled_input_vec = (input_vec .- scale_list[truncation_length][1:end .!= 1, 1]) ./ scale_list[truncation_length][1:end .!= 1, 2] 
-        
-        disc_reward += (discount^min(T_remainder, rollout_length)) * (scale_list[truncation_length][1,2]*neural_net_list[truncation_length](scaled_input_vec)[1] + scale_list[truncation_length][1,1])
-    
-        
-        # Evaluating parameters for sanity check
-        
-        #test_out = []
-        #append!(test_out, input_vec)
-        #append!(test_out, scaled_input_vec)
-        #append!(test_out, (scale_list[truncation_length][1,2]*neural_net_list[truncation_length](scaled_input_vec)[1] + scale_list[truncation_length][1,1]))
-        #append!(test_out, neural_net_list[truncation_length](scaled_input_vec)[1]) 
-        #print(test_out) 
-    end
-
-    return disc_reward
-
-end
-
-function better_rollout(T, curr_t, rollout_length, context, use_context, lambda_param, context_dim, context_mean,
-    context_sd, obs_sd, bandit_count, discount, bandit_posterior_covs, bandit_posterior_means, bandit_param,
-	true_expected_rewards, CovCon, old_cov, SigInvMu)
-
-    #temp_post_covs = bandit_posterior_covs
-    #temp_post_means = bandit_posterior_means
-    disc_reward = 0
-    #fill!(context, 0.0)
-    fill!(true_expected_rewards, 0.0)
-    fill!(CovCon, 0.0)
-    fill!(old_cov,0.0)
-    fill!(SigInvMu,0.0)
-    for t in 1:min(T, rollout_length)
-        #context_seed = rand(1:context_dim)
-        #fill!(context, zero(context[1]))
-        #context[context_seed] = 1
-
-
-        if (t > 1) || !use_context
-            context = randn(context_dim) * context_sd .+ context_mean
-        end
-        mul!(true_expected_rewards, bandit_param, context)
-        #context = randn(context_dim) * context_sd .+ context_mean
-
-
-        curr_ind = 1
-        curr_max = dot((@view bandit_posterior_means[1,:]),context) + lambda_param[1]*(log(t+curr_t)^(1+lambda_param[2])) * (1 - ((t+curr_t) / (curr_t+T))^lambda_param[3]) * dot(context, (@view bandit_posterior_covs[1,:,:]), context)
-        for i in 2:bandit_count
-            candidate_max = dot((@view bandit_posterior_means[i,:]),context) + lambda_param[1]*(log(t+curr_t)^(1+lambda_param[2])) * (1 - ((t+curr_t) / (curr_t+T))^lambda_param[3]) * dot(context, (@view bandit_posterior_covs[i,:,:]), context)
-            if candidate_max > curr_max
-                curr_ind = i
-                curr_max = candidate_max
-            end
-        end
-
-        action = curr_ind
-
-        # TRUE PARAM VERSION
-        #true_expected_reward = true_expected_rewards[action]
-        #disc_reward += true_expected_reward * discount^(t-1)
-        #obs = randn() * obs_sd + true_expected_reward
-        
-        # UNKNOWN PARAM VERSION
-        true_expected_reward = dot(bandit_posterior_means[action,:], context)
-        disc_reward += true_expected_reward * discount^(t-1)
-        obs = randn() * sqrt(obs_sd^2 + dot(context, bandit_posterior_covs[action,:,:], context)) + true_expected_reward
-
-        old_cov .= bandit_posterior_covs[action, :, :]
-	    mul!(CovCon, old_cov, context)
-	    CovCon ./= obs_sd
-
-        dividy = 1 + dot(context ./ obs_sd, old_cov, context ./ obs_sd)
-        for i in 1:context_dim
-            for j in 1:context_dim
-                bandit_posterior_covs[action,j,i] = old_cov[j,i] - CovCon[j]*CovCon[i] / dividy
-            end
-        end
-
-        for i in 1:context_dim
-            for j in 1:(i-1)
-                bandit_posterior_covs[action,i,j] = (bandit_posterior_covs[action,i,j]+bandit_posterior_covs[action,j,i])/2
-                bandit_posterior_covs[action,j,i] = bandit_posterior_covs[action,i,j]
-            end
-        end
-
-        SigInvMu .= old_cov \ @view bandit_posterior_means[action,:]
-        SigInvMu .+= context .* obs ./ obs_sd.^2
-        mul!((@view bandit_posterior_means[action,:]), (@view bandit_posterior_covs[action,:,:]), SigInvMu)
-    end
-
-    return disc_reward
-
-end
-
-function val_better_rollout(T_remainder, curr_t, rollout_length, context, use_context, lambda_param, context_dim, context_mean,
-    context_sd, obs_sd, bandit_count, discount, bandit_posterior_covs, bandit_posterior_means, bandit_param,
-	true_expected_rewards, CovCon, old_cov, SigInvMu)
-
-    
-
-    #temp_post_covs = bandit_posterior_covs
-    #temp_post_means = bandit_posterior_means
-    disc_reward = 0
-    #fill!(context, 0.0)
-    fill!(true_expected_rewards, 0.0)
-    fill!(CovCon, 0.0)
-    fill!(old_cov,0.0)
-    fill!(SigInvMu,0.0)
-
-    truncation_length = T_remainder - min(T_remainder, rollout_length)
-
-    for t in 1:min(T_remainder, rollout_length)
-        #context_seed = rand(1:context_dim)
-        #fill!(context, zero(context[1]))
-        #context[context_seed] = 1
-
-
-        if (t > 1) || !use_context
-            context = randn(context_dim) * context_sd .+ context_mean
-        end
-        mul!(true_expected_rewards, bandit_param, context)
-        #context = randn(context_dim) * context_sd .+ context_mean
-
-
-        curr_ind = 1
-        curr_max = dot((@view bandit_posterior_means[1,:]),context) + lambda_param[1]*(log(t+curr_t)^(1+lambda_param[2])) * (1 - ((t+curr_t) / (curr_t+T_remainder))^lambda_param[3]) * dot(context, (@view bandit_posterior_covs[1,:,:]), context)
-        for i in 2:bandit_count
-            candidate_max = dot((@view bandit_posterior_means[i,:]),context) + lambda_param[1]*(log(t+curr_t)^(1+lambda_param[2])) * (1 - ((t+curr_t) / (curr_t+T_remainder))^lambda_param[3]) * dot(context, (@view bandit_posterior_covs[i,:,:]), context)
-            if candidate_max > curr_max
-                curr_ind = i
-                curr_max = candidate_max
-            end
-        end
-
-        action = curr_ind
-
-        # TRUE PARAM VERSION
-        #true_expected_reward = true_expected_rewards[action]
-        #disc_reward += true_expected_reward * discount^(t-1)
-        #obs = randn() * obs_sd + true_expected_reward
-        
-        # UNKNOWN PARAM VERSION
-        true_expected_reward = dot(bandit_posterior_means[action,:], context)
-        disc_reward += true_expected_reward * discount^(t-1)
-        obs = randn() * sqrt(obs_sd^2 + dot(context, bandit_posterior_covs[action,:,:], context)) + true_expected_reward
-
-        old_cov .= bandit_posterior_covs[action, :, :]
-	    mul!(CovCon, old_cov, context)
-	    CovCon ./= obs_sd
-
-        dividy = 1 + dot(context ./ obs_sd, old_cov, context ./ obs_sd)
-        for i in 1:context_dim
-            for j in 1:context_dim
-                bandit_posterior_covs[action,j,i] = old_cov[j,i] - CovCon[j]*CovCon[i] / dividy
-            end
-        end
-
-        for i in 1:context_dim
-            for j in 1:(i-1)
-                bandit_posterior_covs[action,i,j] = (bandit_posterior_covs[action,i,j]+bandit_posterior_covs[action,j,i])/2
-                bandit_posterior_covs[action,j,i] = bandit_posterior_covs[action,i,j]
-            end
-        end
-
-        SigInvMu .= old_cov \ @view bandit_posterior_means[action,:]
-        SigInvMu .+= context .* obs ./ obs_sd.^2
-        mul!((@view bandit_posterior_means[action,:]), (@view bandit_posterior_covs[action,:,:]), SigInvMu)
-    end
-
-    if truncation_length > 0
-        
-        
-        #### SWITCHED TO TRUE VALUE NEURAL NETWORK AS TEST
-        
-        #input_vec = Vector(vec(bandit_param'))
-        #append!(input_vec, Vector(vec(bandit_posterior_means')))
-        input_vec = Vector(vec(bandit_posterior_means'))
-        append!(input_vec, vcat([upper_triangular_vec(bandit_posterior_covs[a, :, :]) for a in 1:bandit_count]...))
-        
-        scaled_input_vec = (input_vec .- scale_list[truncation_length][1:end .!= 1, 1]) ./ scale_list[truncation_length][1:end .!= 1, 2] 
-        
-        disc_reward += (discount^min(T_remainder, rollout_length)) * (scale_list[truncation_length][1,2]*neural_net_list[truncation_length](scaled_input_vec)[1] + scale_list[truncation_length][1,1])
-    
-        
-        # Evaluating parameters for sanity check
-        
-        #test_out = []
-        #append!(test_out, input_vec)
-        #append!(test_out, scaled_input_vec)
-        #append!(test_out, (scale_list[truncation_length][1,2]*neural_net_list[truncation_length](scaled_input_vec)[1] + scale_list[truncation_length][1,1]))
-        #append!(test_out, neural_net_list[truncation_length](scaled_input_vec)[1]) 
-        #print(test_out) 
-    end
-
-    return disc_reward
-
 end
 ## LAMBDA POLICY
 
@@ -1104,6 +380,7 @@ function val_greedy_rollout_policy(t, T, bandit_count, context, bandit_posterior
     end
     return findmax(BANDIT_VALUES)[2]
 end
+
 
 
 function lambda_mean_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
@@ -1500,7 +777,7 @@ function opt_lambda_policy(t, T, bandit_count, context, bandit_posterior_means, 
 
             lambda = lambda_up[1] .* (lambda_up[2] .^ (0:(T-t)))
             use_context = true
-            rollout_value = lambda_rollout(T-t, rollout_length+1, context, use_context, lambda, context_dim, context_mean,
+            rollout_value = lambda_rollout(T-t+1, rollout_length+1, context, use_context, lambda, context_dim, context_mean,
                 context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
 		        roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
             # up_reward = predictive_rewards[bandit] + discount * rollout_value
@@ -1522,7 +799,7 @@ function opt_lambda_policy(t, T, bandit_count, context, bandit_posterior_means, 
 
             lambda = lambda_dn[1] .* (lambda_dn[2] .^ (0:(T-t)))
             use_context = true
-            rollout_value = lambda_rollout(T-t, rollout_length+1, context, use_context, lambda, context_dim, context_mean,
+            rollout_value = lambda_rollout(T-t+1, rollout_length+1, context, use_context, lambda, context_dim, context_mean,
                 context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
 		        roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
             # down_reward = predictive_rewards[bandit] + discount * rollout_value
@@ -1690,7 +967,7 @@ function better_opt_lambda_policy(t, T, bandit_count, context, bandit_posterior_
 
             lambda_param = lambda_up
             use_context = true
-            rollout_value = better_rollout(T-t, t, rollout_length, context, use_context, lambda_param, context_dim, context_mean,
+            rollout_value = better_rollout(T-t+1, t, rollout_length, context, use_context, lambda_param, context_dim, context_mean,
                 context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
 		        roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
             # up_reward = predictive_rewards[bandit] + discount * rollout_value
@@ -1712,7 +989,7 @@ function better_opt_lambda_policy(t, T, bandit_count, context, bandit_posterior_
 
             lambda_param = lambda_dn
             use_context = true
-            rollout_value = better_rollout(T-t, t, rollout_length, context, use_context, lambda_param, context_dim, context_mean,
+            rollout_value = better_rollout(T-t+1, t, rollout_length, context, use_context, lambda_param, context_dim, context_mean,
                 context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
 		        roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
             # down_reward = predictive_rewards[bandit] + discount * rollout_value
@@ -1886,7 +1163,7 @@ function val_better_opt_lambda_policy(t, T, bandit_count, context, bandit_poster
 
             lambda_param = lambda_up
             use_context = true
-            rollout_value = val_better_rollout(T-t, t, rollout_length, context, use_context, lambda_param, context_dim, context_mean,
+            rollout_value = val_better_rollout(T-t+1, t, rollout_length, context, use_context, lambda_param, context_dim, context_mean,
                 context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
 		        roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
             # up_reward = predictive_rewards[bandit] + discount * rollout_value
@@ -1908,7 +1185,7 @@ function val_better_opt_lambda_policy(t, T, bandit_count, context, bandit_poster
 
             lambda_param = lambda_dn
             use_context = true
-            rollout_value = val_better_rollout(T-t, t, rollout_length, context, use_context, lambda_param, context_dim, context_mean,
+            rollout_value = val_better_rollout(T-t+1, t, rollout_length, context, use_context, lambda_param, context_dim, context_mean,
                 context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
 		        roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
             # down_reward = predictive_rewards[bandit] + discount * rollout_value
@@ -2078,7 +1355,7 @@ function val_better_grid_lambda_policy(t, T, bandit_count, context, bandit_poste
                     end
 
                     use_context = true
-                    rollout_value = val_better_rollout(T-t, t, rollout_length, context, use_context, lambda_param, context_dim, context_mean,
+                    rollout_value = val_better_rollout(T-t+1, t, rollout_length, context, use_context, lambda_param, context_dim, context_mean,
                         context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
                         roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
                     # up_reward = predictive_rewards[bandit] + discount * rollout_value
@@ -2178,6 +1455,194 @@ function val_better_grid_lambda_policy(t, T, bandit_count, context, bandit_poste
 
 end
 
+
+function val_greedy_thompson_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+
+    BANDIT_VALUES = zeros(bandit_count)
+    predictive_rewards = bandit_posterior_means * context
+
+## PREALLOCATION
+    roll_context = zeros(context_dim)
+    roll_true_expected_rewards = zeros(bandit_count)
+    roll_CovCon = zeros(context_dim)
+    roll_old_cov = zeros(context_dim, context_dim)
+    roll_SigInvMu = zeros(context_dim)
+
+    temp_post_means = zeros(bandit_count, context_dim)
+    temp_post_covs = zeros(bandit_count, context_dim, context_dim)
+    temp_bandit_mean = zeros(context_dim)
+    temp_bandit_cov = zeros(context_dim, context_dim)
+
+    bandit_param = zeros(bandit_count, context_dim)
+    true_expected_rewards = zeros(bandit_count)
+    grad_est = zeros(3)
+
+    
+    policies = [greedy_policy, thompson_policy]
+    policy_values = []
+    
+    println("Context Start: ", context)
+    flush(stdout)
+
+    lambda = [0, 0]
+
+    for policy in policies  
+
+            MEAN_REWARD = 0
+
+            for roll in 1:n_opt_rollouts
+            
+                copy!(temp_post_means, bandit_posterior_means)
+                copy!(temp_post_covs, bandit_posterior_covs)
+                #bandit_param = zeros(bandit_count, context_dim)
+                for bandit in 1:bandit_count
+                    copy!(temp_bandit_mean, (@view bandit_posterior_means[bandit,:]))
+                    copy!(temp_bandit_cov, (@view bandit_posterior_covs[bandit,:,:]))
+                    bandit_param[bandit,:] .= rand(MvNormal(temp_bandit_mean, temp_bandit_cov))
+                end
+
+                use_context = true
+                
+                rollout_value = val_rollout(policy, T-t+1, rollout_length, context, use_context, lambda, context_dim, context_mean,
+                    context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
+                    roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
+                
+                
+                MEAN_REWARD = ((roll - 1) * MEAN_REWARD + rollout_value) / roll
+
+            end
+            
+            push!(policy_values, MEAN_REWARD)
+        
+    end
+    
+    println("Context Finish: ", context)
+    flush(stdout)
+
+    opt_index = findmax(policy_values)[2]
+    opt_policy = policies[opt_index]
+
+    println("GREEDY: ", policy_values[1],", THOMPSON: ", policy_values[2])
+    flush(stdout)
+
+    # END OPTIMIZATION OF LAMBDA
+
+    
+    opt_act = opt_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+
+    println("Optimal Action: ",opt_act)
+    flush(stdout)
+
+    return opt_act
+
+end
+
+function val_epsilon_greedy_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, n_eps)
+
+    BANDIT_VALUES = zeros(bandit_count)
+    predictive_rewards = bandit_posterior_means * context
+
+## PREALLOCATION
+    roll_context = zeros(context_dim)
+    roll_true_expected_rewards = zeros(bandit_count)
+    roll_CovCon = zeros(context_dim)
+    roll_old_cov = zeros(context_dim, context_dim)
+    roll_SigInvMu = zeros(context_dim)
+
+    temp_post_means = zeros(bandit_count, context_dim)
+    temp_post_covs = zeros(bandit_count, context_dim, context_dim)
+    temp_bandit_mean = zeros(context_dim)
+    temp_bandit_cov = zeros(context_dim, context_dim)
+
+    bandit_param = zeros(bandit_count, context_dim)
+    true_expected_rewards = zeros(bandit_count)
+    grad_est = zeros(3)
+
+    
+    #policies = [greedy_policy, thompson_policy]
+    epsilon_values = []
+    
+    println("Context Start: ", context)
+    flush(stdout)
+
+    lambda = [0, 0]
+
+    for eps in 1:n_eps  
+
+            MEAN_REWARD = 0
+
+            for roll in 1:n_opt_rollouts
+            
+                copy!(temp_post_means, bandit_posterior_means)
+                copy!(temp_post_covs, bandit_posterior_covs)
+                #bandit_param = zeros(bandit_count, context_dim)
+                for bandit in 1:bandit_count
+                    copy!(temp_bandit_mean, (@view bandit_posterior_means[bandit,:]))
+                    copy!(temp_bandit_cov, (@view bandit_posterior_covs[bandit,:,:]))
+                    bandit_param[bandit,:] .= rand(MvNormal(temp_bandit_mean, temp_bandit_cov))
+                end
+
+                use_context = true
+                
+                rollout_value = val_epsilon_greedy_rollout((eps-1)/n_eps, T-t+1, rollout_length, context, use_context, lambda, context_dim, context_mean,
+                    context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
+                    roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
+                
+                
+                MEAN_REWARD = ((roll - 1) * MEAN_REWARD + rollout_value) / roll
+
+            end
+            
+            push!(epsilon_values, MEAN_REWARD)
+        
+    end
+    
+    println("Context Finish: ", context)
+    flush(stdout)
+
+    opt_index = findmax(epsilon_values)[2]
+    opt_epsilon = (opt_index-1) / n_eps
+
+    println("EPSILON: ", opt_epsilon)
+    flush(stdout)
+
+    # END OPTIMIZATION OF LAMBDA
+
+    
+    if rand() > opt_epsilon
+        return findmax(predictive_rewards)[2]
+    else
+        return rand(1:bandit_count)
+    end
+
+end
+
+function vegp2(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+    return(val_epsilon_greedy_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, 2))
+
+end
+function vegp4(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+    return(val_epsilon_greedy_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, 4))
+
+end
+function vegp8(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+    return(val_epsilon_greedy_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, 8))
+
+end
+function vegp16(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+    return(val_epsilon_greedy_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, 16))
+
+end
+function vegp32(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+    return(val_epsilon_greedy_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, 32))
+
+end
+function vegp64(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+    return(val_epsilon_greedy_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, 64))
+
+end
+
+
 function bayesopt_lambda_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
 
     BANDIT_VALUES = zeros(bandit_count)
@@ -2218,7 +1683,7 @@ function bayesopt_lambda_policy(t, T, bandit_count, context, bandit_posterior_me
         end
 
         use_context = true  
-        rollout_value = better_rollout(T-t, t, rollout_length+1, context, use_context, lambda_param, context_dim, context_mean,
+        rollout_value = better_rollout(T-t+1, t, rollout_length+1, context, use_context, lambda_param, context_dim, context_mean,
             context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
             roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
         return rollout_value
@@ -2312,7 +1777,7 @@ function bayesopt_lambda_policy(t, T, bandit_count, context, bandit_posterior_me
     return findmax(BANDIT_VALUES)[2]
 end
 
-##### GRID SEARCH VERSION
+## GRID SEARCH VERSION
 function grid_lambda_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
 
     BANDIT_VALUES = zeros(bandit_count)
@@ -2384,7 +1849,7 @@ function grid_lambda_policy(t, T, bandit_count, context, bandit_posterior_means,
 		    lambda = grid_spot[1] .* (grid_spot[2] .^ (0:(T-t)))
             
             use_context = true
-            rollout_value = lambda_rollout(T-t, rollout_length+1, context, use_context, lambda, context_dim, context_mean,
+            rollout_value = lambda_rollout(T-t+1, rollout_length+1, context, use_context, lambda, context_dim, context_mean,
                 context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
 		        roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
                 MEAN_REWARD = ((roll - 1) * MEAN_REWARD + rollout_value) / roll
@@ -2574,6 +2039,7 @@ end
 
 function ent_opt_lambda_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
 
+
     BANDIT_VALUES = zeros(bandit_count)
     predictive_rewards = bandit_posterior_means * context
 
@@ -2640,7 +2106,7 @@ function ent_opt_lambda_policy(t, T, bandit_count, context, bandit_posterior_mea
             lambda = lambda_up[1] .* (lambda_up[2] .^ (0:(T-t)))
             
             use_context = true
-            rollout_value = ent_lambda_rollout(T-t, rollout_length+1, context, use_context, lambda, context_dim, context_mean,
+            rollout_value = ent_lambda_rollout(T-t+1, rollout_length+1, context, use_context, lambda, context_dim, context_mean,
                 context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
 		        roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
             # up_reward = predictive_rewards[bandit] + discount * rollout_value
@@ -2663,7 +2129,7 @@ function ent_opt_lambda_policy(t, T, bandit_count, context, bandit_posterior_mea
             lambda = lambda_dn[1] .* (lambda_dn[2] .^ (0:(T-t)))
             
             use_context = true
-            rollout_value = ent_lambda_rollout(T-t, rollout_length+1, context, use_context, lambda, context_dim, context_mean,
+            rollout_value = ent_lambda_rollout(T-t+1, rollout_length+1, context, use_context, lambda, context_dim, context_mean,
                 context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
 		        roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
             # down_reward = predictive_rewards[bandit] + discount * rollout_value
@@ -2753,115 +2219,3 @@ function ent_opt_lambda_policy(t, T, bandit_count, context, bandit_posterior_mea
     end
     return findmax(BANDIT_VALUES)[2]
 end
-## SIMULATIONS
-
-# Sims
-
-print("\n")
-
-@time greedyRewards, greedyOptrewards = contextual_bandit_simulator(greedy_policy, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
-                                          context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
-
-print("\n")
-#@time epsgreedyRewards, epsgreedyOptrewards = contextual_bandit_simulator(epsilon_greedy_policy, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
-#                                          context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
-
-#print("\n")
-#@time thompsonRewards, thompsonOptrewards = contextual_bandit_simulator(thompson_policy, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
-#                                            context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
-
-#print("\n")
-#@time bayesucbRewards, bayesucbOptrewards = contextual_bandit_simulator(bayes_ucb_policy, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
-#                                            context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
-
-#print("\n")
-#@time squarecbRewards, squarecbOptrewards = contextual_bandit_simulator(squarecb_policy, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
-#                                            context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
-
-#print("\n")
-#@time lambdaRewards, lambdaOptrewards = contextual_bandit_simulator(lambda_policy, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
-#                                            context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
-
-
-#print("\n")
-
-#@time betterlambdaRewards, betterlambdaOptrewards = contextual_bandit_simulator(better_lambda_policy, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
-#                                            context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
-
-#print("\n")
-
-#@time optlambdaRewards, optlambdaOptrewards = contextual_bandit_simulator(opt_lambda_policy, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
-#                                          context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
-
-#print("\n")
-
-#@time lambdameanRewards, lambdameanOptrewards = contextual_bandit_simulator(lambda_mean_policy, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
-#                                            context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
-#print("\n")
-
-
-@time greedyrolloutRewards, greedyrolloutOptrewards = contextual_bandit_simulator(greedy_rollout_policy, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
-                                            context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
-print("\n")
-
-
-@time valgreedyrolloutRewards, valgreedyrolloutOptrewards = contextual_bandit_simulator(val_greedy_rollout_policy, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
-                                            context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
-print("\n")
-
-
-#@time bayesoptrolloutRewards, bayesoptrolloutOptrewards = contextual_bandit_simulator(bayesopt_lambda_policy, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
-#                                            context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
-#print("\n")
-#@time gridlambdaRewards, gridlambdaOptrewards = contextual_bandit_simulator(grid_lambda_policy, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
-#                                           context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
-#print("\n")
-#@time entlambdaRewards, entlambdaOptrewards = contextual_bandit_simulator(ent_lambda_policy, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
-#                                            context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
-#print("\n")
-#@time entoptlambdaRewards, entoptlambdaOptrewards = contextual_bandit_simulator(ent_opt_lambda_policy, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
-#                                            context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
-
-
-#print("\n")
-
-#@time valbetteroptlambdaRewards, valbetteroptlambdaOptrewards = contextual_bandit_simulator(val_better_opt_lambda_policy, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
-#                                            context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
-
-#print("\n")
-
-
-@time valbettergridlambdaRewards, valbettergridlambdaOptrewards = contextual_bandit_simulator(val_better_grid_lambda_policy, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
-                                            context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
-
-print("\n")
-
-
-# Plot
-
-const discount_vector = discount .^ collect(0:(T-1))
-
-const greedyCumDiscReg = cumsum(discount_vector .* [mean(c) for c in eachcol(greedyOptrewards - greedyRewards)])
-#const epsgreedyCumDiscReg = cumsum(discount_vector .* [mean(c) for c in eachcol(epsgreedyOptrewards - epsgreedyRewards)])
-#const thompsonCumDiscReg = cumsum(discount_vector .* [mean(c) for c in eachcol(thompsonOptrewards - thompsonRewards)])
-#const bayesucbCumDiscReg = cumsum(discount_vector .* [mean(c) for c in eachcol(bayesucbOptrewards - bayesucbRewards)])
-#const squarecbCumDiscReg = cumsum(discount_vector .* [mean(c) for c in eachcol(squarecbOptrewards - squarecbRewards)])
-#const lambdaCumDiscReg = cumsum(discount_vector .* [mean(c) for c in eachcol(lambdaOptrewards - lambdaRewards)])
-#const lambdameanCumDiscReg = cumsum(discount_vector .* [mean(c) for c in eachcol(lambdameanOptrewards - lambdameanRewards)])
-const greedyrolloutCumDiscReg = cumsum(discount_vector .* [mean(c) for c in eachcol(greedyrolloutOptrewards - greedyrolloutRewards)])
-const valgreedyrolloutCumDiscReg = cumsum(discount_vector .* [mean(c) for c in eachcol(valgreedyrolloutOptrewards - valgreedyrolloutRewards)])
-#const betterlambdaCumDiscReg = cumsum(discount_vector .* [mean(c) for c in eachcol(betterlambdaOptrewards - betterlambdaRewards)])
-#const optlambdaCumDiscReg = cumsum(discount_vector .* [mean(c) for c in eachcol(optlambdaOptrewards - optlambdaRewards)])
-#const bayesoptlambdaCumDiscReg = cumsum(discount_vector .* [mean(c) for c in eachcol(bayesoptrolloutOptrewards - bayesoptrolloutRewards)])
-#const gridlambdaCumDiscReg = cumsum(discount_vector .* [mean(c) for c in eachcol(gridlambdaOptrewards - gridlambdaRewards)])
-#const entlambdaCumDiscReg = cumsum(discount_vector .* [mean(c) for c in eachcol(entlambdaOptrewards - entlambdaRewards)])
-#const entoptlambdaCumDiscReg = cumsum(discount_vector .* [mean(c) for c in eachcol(entoptlambdaOptrewards - entoptlambdaRewards)])
-#const valbetteroptlambdaCumDiscReg = cumsum(discount_vector .* [mean(c) for c in eachcol(valbetteroptlambdaOptrewards - valbetteroptlambdaRewards)])
-const valbettergridlambdaCumDiscReg = cumsum(discount_vector .* [mean(c) for c in eachcol(valbettergridlambdaOptrewards - valbettergridlambdaRewards)])
-
-#const combReg = [greedyCumDiscReg epsgreedyCumDiscReg thompsonCumDiscReg bayesucbCumDiscReg squarecbCumDiscReg lambdaCumDiscReg lambdameanCumDiscReg greedyrolloutCumDiscReg betterlambdaCumDiscReg optlambdaCumDiscReg bayesoptlambdaCumDiscReg]
-
-const combReg = [greedyCumDiscReg greedyrolloutCumDiscReg valgreedyrolloutCumDiscReg valbettergridlambdaCumDiscReg]
-CSV.write("/hpc/home/jml165/rl/arrayresults/results_$(idx).csv", Tables.table(combReg), header=["Greedy", "GreedyRollout", "ValGreedyRollout", "ValBetterGrid"])
-
-#CSV.write("/hpc/home/jml165/rl/arrayresults/results_$(idx).csv",  Tables.table(combReg), header=["Greedy", "EpsGreedy", "Thompson", "BayesUCB", "SquareCB", "Lambda","LambdaMean","GreedyRollout", "BetterLambda","OptLambda", "BayesOptLambda"])
