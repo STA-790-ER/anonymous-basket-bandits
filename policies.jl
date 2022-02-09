@@ -1642,6 +1642,110 @@ function vegp64(t, T, bandit_count, context, bandit_posterior_means, bandit_post
 
 end
 
+function val_fractional_thompson_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, n_thom)
+
+    BANDIT_VALUES = zeros(bandit_count)
+    predictive_rewards = bandit_posterior_means * context
+
+## PREALLOCATION
+    roll_context = zeros(context_dim)
+    roll_true_expected_rewards = zeros(bandit_count)
+    roll_CovCon = zeros(context_dim)
+    roll_old_cov = zeros(context_dim, context_dim)
+    roll_SigInvMu = zeros(context_dim)
+
+    temp_post_means = zeros(bandit_count, context_dim)
+    temp_post_covs = zeros(bandit_count, context_dim, context_dim)
+    temp_bandit_mean = zeros(context_dim)
+    temp_bandit_cov = zeros(context_dim, context_dim)
+
+    bandit_param = zeros(bandit_count, context_dim)
+    true_expected_rewards = zeros(bandit_count)
+    grad_est = zeros(3)
+
+    
+    #policies = [greedy_policy, thompson_policy]
+    thompson_values = []
+    
+    println("Context Start: ", context)
+    flush(stdout)
+
+    lambda = [0, 0]
+
+    for thom in 1:n_thom  
+
+            MEAN_REWARD = 0
+
+            for roll in 1:n_opt_rollouts
+            
+                copy!(temp_post_means, bandit_posterior_means)
+                copy!(temp_post_covs, bandit_posterior_covs)
+                #bandit_param = zeros(bandit_count, context_dim)
+                for bandit in 1:bandit_count
+                    copy!(temp_bandit_mean, (@view bandit_posterior_means[bandit,:]))
+                    copy!(temp_bandit_cov, (@view bandit_posterior_covs[bandit,:,:]))
+                    bandit_param[bandit,:] .= rand(MvNormal(temp_bandit_mean, temp_bandit_cov))
+                end
+                
+
+                use_context = true
+                
+                rollout_value = val_fractional_thompson_rollout((thom-1)/n_thom, T-t+1, rollout_length, context, use_context, lambda, context_dim, context_mean,
+                    context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
+                    roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
+                
+                
+                MEAN_REWARD = ((roll - 1) * MEAN_REWARD + rollout_value) / roll
+
+            end
+            
+            push!(thompson_values, MEAN_REWARD)
+        
+    end
+    
+    println("Context Finish: ", context)
+    flush(stdout)
+
+    opt_index = findmax(thompson_values)[2]
+    opt_thom = (opt_index-1) / n_thom
+
+    println("EPSILON: ", opt_thom)
+    flush(stdout)
+
+    # END OPTIMIZATION OF LAMBDA
+    if opt_thom == 0
+        return greedy_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+    else
+        frac = 1 / opt_thom - 1
+        thompson_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs ./ frac, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+    end
+
+end
+
+function vftp2(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+    return(val_fractional_thompson_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, 2))
+
+end
+function vftp4(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+    return(val_fractional_thompson_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, 4))
+
+end
+function vftp8(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+    return(val_fractional_thompson_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, 8))
+
+end
+function vftp16(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+    return(val_fractional_thompson_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, 16))
+
+end
+function vftp32(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+    return(val_fractional_thompson_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, 32))
+
+end
+function vftp64(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+    return(val_fractional_thompson_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, 64))
+
+end
 
 function bayesopt_lambda_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
 

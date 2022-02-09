@@ -17,7 +17,7 @@ const context_mean = 0
 const context_sd = 1
 const obs_sd = 1
 
-const bandit_count = 3
+const bandit_count = 20
 const bandit_prior_mean = 0
 const bandit_prior_sd = 10
 
@@ -28,20 +28,20 @@ const multi_count = 5
 const T = 100
 
 # NUMBER OF GLOBAL SIMULATION EPISODES (PER INDEX JOB)
-const n_episodes = 10
+const n_episodes = 10000
 
 # DISCOUNT PARAMETER
 const discount = 1.
 
 # PARAMETER FOR EPSILON GREEDY POLICY
-const epsilon = .01
+const epsilon = .03
 
 # PARAMETERS FOR ALL ROLLOUT METHODS
 const rollout_length = 5
 const n_rollouts = 50
 
 # PARAMETERS FOR SPSA OPTIMIZATION METHOD
-const n_opt_rollouts = 2500
+const n_opt_rollouts = 100000
 const n_spsa_iter = 300
 
 
@@ -131,8 +131,8 @@ function ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n
 	        bandit_posterior_covs[action, :, :] = ((bandit_posterior_covs[action,:,:]) + bandit_posterior_covs[action,:,:]')/2
 	        bandit_posterior_means[action, :] = (bandit_posterior_covs[action, :, :]) * (old_cov \ (bandit_posterior_means[action,:]) + context * obs / obs_sd^2)
 
-	        println("Ep: ", ep, " - ", t, " of ", T, " for ", String(Symbol(action_function)))
-            flush(stdout)
+	        #println("Ep: ", ep, " - ", t, " of ", T, " for ", String(Symbol(action_function)))
+            #flush(stdout)
 
 
         end
@@ -221,8 +221,123 @@ function multi_ep_contextual_bandit_simulator(ep,action_function, T, rollout_len
             end
 
 
-	        println("Ep: ", ep, " - ", t, " of ", T, " for ", String(Symbol(action_function)))
-            flush(stdout)
+	        #println("Ep: ", ep, " - ", t, " of ", T, " for ", String(Symbol(action_function)))
+            #flush(stdout)
+
+
+        end
+	return EPREWARDS, EPOPTREWARDS
+end
+
+
+
+function single_expected_entropy_gain(cov, contexts)
+    return log(det(Matrix(1.0I, context_dim, context_dim) + cov * contexts' * contexts ./ obs_sd.^2))
+end
+
+
+function expected_entropy_gain(bandit_posterior_covs, contexts, actions)
+    gain = 0
+    for b in 1:bandit_count
+       count = sum(actions .== b)
+       gain += single_expected_entropy_gain(@view(bandit_posterior_covs[b, :, :]), @view(contexts[actions .== b, :]))
+    end
+    return gain
+end
+
+function coord_greedy_ep_contextual_bandit_simulator(ep, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
+    context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon, global_bandit_param)
+        
+    
+        bandit_posterior_means = zeros(bandit_count, context_dim)
+        bandit_posterior_covs = zeros(bandit_count, context_dim, context_dim)
+    	bandit_param = copy(global_bandit_param)
+        true_bandit_param = copy(global_bandit_param)
+        EPREWARDS = zeros(T)
+	    EPOPTREWARDS = zeros(T)
+        
+        actions = convert(Vector{Int64}, zeros(multi_count))
+        contexts = zeros(multi_count, context_dim)
+        obss = zeros(multi_count)
+        for i in 1:bandit_count
+            bandit_posterior_means[i, :] = repeat([bandit_prior_mean], context_dim)
+            bandit_posterior_covs[i, :, :] = Diagonal(repeat([bandit_prior_sd^2], context_dim))
+        end
+        
+        for t in 1:T
+            remains = []
+            for m in 1:multi_count
+
+                context = randn(context_dim) * context_sd .+ context_mean
+                contexts[m, :] = context
+                #true_expected_rewards = true_bandit_param * context
+                posterior_expected_rewards = bandit_posterior_means * context
+                if rand() > epsilon
+                    actions[m] = findmax(posterior_expected_rewards)[2]
+                else
+                    push!(remains, m)
+                end
+                #true_expected_reward = true_expected_rewards[action]
+                #EPREWARDS[t] += true_expected_reward
+                #EPOPTREWARDS[t] += maximum(true_expected_rewards)
+                #obs = randn() * sqrt(obs_sd^2 + dot(context, bandit_posterior_covs[action,:,:],context)) + true_expected_reward
+                #obss[m] = randn() * obs_sd + true_expected_reward
+	        
+            end
+            
+            if length(remains) > 0
+                max_val = 0
+                free_actions = copy(actions)
+                max_tup = zeros(length(remains))
+                for tup in CartesianIndices(ntuple(d->1:bandit_count, length(remains)))
+                    for i in 1:length(remains)
+                        free_actions[remains[i]] = tup[i]
+                    end
+                    eeg = expected_entropy_gain(bandit_posterior_covs, contexts, actions)
+                    if eeg > max_val
+                        max_val = eeg
+                        max_tup .= free_actions[remains]
+                    end
+                end
+
+                actions[remains] .= max_tup
+
+            end
+            
+            for m in 1:multi_count
+                #print(actions)
+                #print("\n")
+                action = actions[m]
+                context = contexts[m, :]
+                true_expected_rewards = true_bandit_param * context
+                EPREWARDS[t] += true_expected_rewards[action]
+                EPOPTREWARDS[t] += maximum(true_expected_rewards)
+                #obs = randn() * sqrt(obs_sd^2 + dot(context, bandit_posterior_covs[action,:,:],context)) + true_expected_reward
+                #obs = randn() * obs_sd + true_expected_rewards[action]
+                obss[m] = randn() * obs_sd + true_expected_rewards[action]
+	        
+            end
+
+
+            for act in 1:bandit_count
+
+                action_obss = obss[actions .== act]
+                action_contexts = contexts[actions .== act, :]
+                old_cov = bandit_posterior_covs[act, :, :]
+                #CovCon = old_cov * context ./ obs_sd
+                #bandit_posterior_covs[act, :, :] = old_cov - CovCon * CovCon' ./ (1 + dot(context, old_cov, context))
+                #bandit_posterior_covs[act, :, :] = ((bandit_posterior_covs[act,:,:]) + bandit_posterior_covs[act,:,:]')/2
+                #bandit_posterior_means[act, :] = (bandit_posterior_covs[act, :, :]) * (old_cov \ (bandit_posterior_means[act,:]) + context * obs / obs_sd^2)
+                #
+                bandit_posterior_covs[act, :, :] = inv(inv(old_cov) + action_contexts' * action_contexts ./ obs_sd^2)
+                bandit_posterior_covs[act, :, :] = ((bandit_posterior_covs[act,:,:]) + bandit_posterior_covs[act,:,:]')/2
+                bandit_posterior_means[act, :, :] = bandit_posterior_covs[act, :, :] * (old_cov \ bandit_posterior_means[act, :] + action_contexts' * action_obss ./ obs_sd^2)
+
+            end
+
+
+	        #println("Ep: ", ep, " - ", t, " of ", T, " for coord eps greedy")
+            #flush(stdout)
 
 
         end
@@ -286,6 +401,35 @@ function multi_contextual_bandit_simulator(action_function, T, rollout_length, n
 
 end
 
+function coord_greedy_contextual_bandit_simulator(T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
+    context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
+
+    REWARDS = zeros(T, n_episodes)
+    OPTREWARDS = zeros(T, n_episodes)
+    ep_count = 1
+    
+
+    ## USING BAYESIAN FORMULATION FOR FAIR COMPARISON
+    #global_bandit_param = [1 0; 0 1; 2 -1]
+    global_bandit_param = rand(Normal(bandit_prior_mean, bandit_prior_sd), bandit_count, context_dim)
+    
+    
+    #threadreps = zeros(Threads.nthreads())
+
+
+    for ep in 1:n_episodes
+    
+        EPREWARDS, EPOPTREWARDS = coord_greedy_ep_contextual_bandit_simulator(ep,T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
+                                       context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon, global_bandit_param)
+        ep_count += 1
+	    REWARDS[:, ep] = EPREWARDS
+	    OPTREWARDS[:, ep] = EPOPTREWARDS
+    
+    end
+    
+    return REWARDS', OPTREWARDS'
+
+end
 
 ## SIMULATIONS
 
@@ -404,10 +548,20 @@ const discount_vector = discount .^ collect(0:(T-1))
 #const run_policies = [greedy_policy, greedy_policy, thompson_policy, thompson_policy]
 #const multi_ind = [true, false, true, false]
 
-const run_policies = [vegp2, vegp4, vegp8, vegp16, vegp32, vegp64]
-const multi_ind = [false, false, false, false, false, false]
+#const run_policies = [vftp2, vftp4, vftp8, vftp16, vftp32, vftp64, vegp2, vegp4, vegp8, vegp16, vegp32, vegp64]
+#const multi_ind = [false, false, false, false, false, false, false, false, false, false, false, false]
+
+const run_policies = [greedy_policy, epsilon_greedy_policy] 
+const multi_ind = [true, true]
+const coord_epsilon_greedy = true
+
 regret_header = []
-cumulative_discounted_regrets = zeros(T, length(run_policies))
+
+if coord_epsilon_greedy
+    cumulative_discounted_regrets = zeros(T, 1+length(run_policies))
+else
+    cumulative_discounted_regrets = zeros(T, length(run_policies))
+end
 
 for pol in 1:length(run_policies)
     
@@ -427,6 +581,14 @@ for pol in 1:length(run_policies)
     pol_cumulative_discounted_regret = cumsum(discount_vector .* [mean(c) for c in eachcol(pol_opt_rewards - pol_rewards)])
     cumulative_discounted_regrets[:, pol] = pol_cumulative_discounted_regret
 
+end
+
+if coord_epsilon_greedy
+    ceg_rewards, ceg_opt_rewards = coord_greedy_contextual_bandit_simulator(T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
+    context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
+    cdr = cumsum(discount_vector .* [mean(c) for c in eachcol(ceg_opt_rewards - ceg_rewards)])
+    cumulative_discounted_regrets[:, 1+length(run_policies)] = cdr
+    push!(regret_header, "Coord_Epsilon_Greedy")
 end
 
 
