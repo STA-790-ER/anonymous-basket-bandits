@@ -21,3 +21,16 @@ write.csv(file_means, file="~/rl/combresults/combresults.csv", row.names=TRUE)
 write.csv(file_vars, file="~/rl/combresults/combvars.csv", row.names=TRUE)
 
 write.csv(agree_prop, file = "~/rl/combresults/agreeprop.csv")
+
+library(tidyverse)
+
+
+ploty <- file_means %>% as.data.frame() %>% mutate(Time = 1:nrow(file_means)) %>% pivot_longer(cols = colnames(file_means), names_to = "Policy", values_to = "Regret") %>%
+    ggplot(aes(x = Time, y = Regret, colour = Policy)) +
+    geom_line() +
+    labs(x = "Time", y = "Cumulative Expected Regret", title = "Regret by Policy")
+
+
+pdf(file="~/rl/combresults/regretplot.pdf")
+ploty
+dev.off()

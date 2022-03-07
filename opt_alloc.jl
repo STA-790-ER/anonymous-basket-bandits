@@ -1,27 +1,28 @@
 using JuMP, Pavito, Ipopt, GLPK, LinearAlgebra
 
-k = 4 # number arms
-m = 3 # number agents
-p = 3 # context dimension
+#k = 4 # number arms
+#m = 3 # number agents
+#p = 3 # context dimension
 
-covs = invcovs = randn(k, p, p)
-contexts = randn(m, p)
-
-for i in 1:k
-    invcovs[i, :, :] = inv(covs[i, :, :] * covs[i, :, :]')
-end
+#covs = randn(k, p, p)
+#contexts = randn(m, p)
 
 
-function KL_optimal_allocations(invcovs, contexts)
 
-    k, p = size(invcovs)[1:2]
+function KL_optimal_allocations(covs, contexts)
+
+    k, p = size(covs)[1:2]
     m = size(contexts)[1]
-
+    invcovs = zeros(k, p, p)
+    for i in 1:k
+        invcovs[i, :, :] = inv(covs[i, :, :])
+    end
     solver = JuMP.optimizer_with_attributes(
             Pavito.Optimizer,
             "mip_solver" => optimizer_with_attributes(GLPK.Optimizer, "msg_lev" => GLPK.GLP_MSG_OFF),
             "cont_solver" => optimizer_with_attributes(Ipopt.Optimizer, "print_level" => 0),
-            "mip_solver_drives" => false
+            "mip_solver_drives" => false,
+            "log_level" => 0
            )
 
     mod = Model(solver)
@@ -43,10 +44,10 @@ function KL_optimal_allocations(invcovs, contexts)
     @NLobjective(mod, Max, f(S...))
 
     optimize!(mod)
-    print(value.(S))
+    #print(value.(S))
     return value.(S)
 end
 
-KL_optimal_allocations(invcovs, contexts)
+#KL_optimal_allocations(invcovs, contexts)
 
 
