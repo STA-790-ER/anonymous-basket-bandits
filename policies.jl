@@ -9,8 +9,14 @@ end
 function epsilon_greedy_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
 
     epsilon_draw = rand()
+    
+    if decreasing
+        thresh = epsilon / t
+    else
+        thresh = epsilon
+    end
 
-    if epsilon_draw < epsilon
+    if epsilon_draw < thresh
         return rand(1:bandit_count)
     else
         val, action = findmax(bandit_posterior_means * context)
