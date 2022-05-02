@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH -J jlcb1
-#SBATCH --array 1-399
+#SBATCH --array 1-100
 #SBATCH --cpus-per-task 1
 #SBATCH --output="/hpc/home/jml165/slurmout/R-%A_%a.out"
 #SBATCH --error="/hpc/home/jml165/slurmout/R-%A_%a.err"
-#SBATCH --mem=2G
+#SBATCH --mem=8G
 #SBATCH --partition=common,scavenger
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=jml165@duke.edu
@@ -13,4 +13,4 @@
 module purge
 module load Julia/1.6.1
 
-julia -t 1 ~/rl/lawson-bandits/val.jl
+julia -t 1 ~/rl/lawson-bandits/multi_nn.jl
