@@ -19,7 +19,7 @@ const bandit_count = 3
 const bandit_prior_mean = 0
 const bandit_prior_sd = 10
 
-const n_episodes = 20000
+const n_episodes = 100000
 
 const discount = 1.
 const epsilon = .01
@@ -35,7 +35,7 @@ const grid_num = 6
 const int_length = 2
 const n_grid_rollouts = 50
 
-const n_points = 100
+const n_points = 200
 
 
 # Multi Action
@@ -467,7 +467,7 @@ function bernoulli_ep_contextual_bandit_simulator(ep,action_function, T, rollout
 #	        println("Ep: ", ep, " for ", String(Symbol(action_function)))
 #            flush(stdout)
 #        end
-	return EPREWARDS .- EPOPTREWARDS, POST_MEANS, POST_COVS
+	return EPREWARDS, POST_MEANS, POST_COVS
 end
 
 function bernoulli_contextual_bandit_simulator(action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,

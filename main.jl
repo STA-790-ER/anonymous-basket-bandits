@@ -43,7 +43,7 @@ const rollout_length = 5
 const n_rollouts = 50
 
 # PARAMETERS FOR SPSA OPTIMIZATION METHOD
-const n_opt_rollouts = 100000
+const n_opt_rollouts = 50
 const n_spsa_iter = 300
 
 
@@ -75,6 +75,9 @@ scale_list = []
 multi_neural_net_list = []
 multi_scale_list = []
 
+bernoulli_neural_net_list = []
+bernoulli_scale_list = []
+
 ## NEED TO DECIDE WHETHER TRUE IS USED
 for i in 1:T
     @load "/hpc/home/jml165/rl/valneuralnets/valnn_$(i).bson" m
@@ -87,6 +90,12 @@ for i in 1:T
     scales = CSV.File("/hpc/home/jml165/rl/multineuralnetscales/multiscales_$(i).csv", header = false) |> Tables.matrix
     push!(multi_neural_net_list, m)
     push!(multi_scale_list, scales)
+end
+for i in 1:T
+    @load "/hpc/home/jml165/rl/bernvalneuralnets/bernvalnn_$(i).bson" m
+    scales = CSV.File("/hpc/home/jml165/rl/bernneuralnetscales/bernscales_$(i).csv", header = false) |> Tables.matrix
+    push!(bern_neural_net_list, m)
+    push!(bern_scale_list, scales)
 end
 
 
@@ -1840,9 +1849,9 @@ const discount_vector = discount .^ collect(0:(T-1))
 #const multi_ind = [true, true]
 
 
-const run_policies = [epsilon_greedy_policy, thompson_policy, greedy_policy]
-const multi_ind = [false, false, false]
-const bern_ind = [true, true, true]
+const run_policies = [epsilon_greedy_policy, thompson_policy, greedy_policy, bernoulli_val_greedy_rollout_policy, bernoulli_val_greedy_thompson_policy, bernoulli_val_better_grid_lambda_policy, bernoulli_greedy_rollout_policy]
+const multi_ind = [false, false, false, false, false, false, false]
+const bern_ind = [true, true, true, true, true, true, true]
 const coord_epsilon_greedy = false
 const coord_thompson = false
 const coord_ids = false

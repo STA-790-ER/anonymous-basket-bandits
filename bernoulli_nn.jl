@@ -36,11 +36,11 @@ Y_train = dat[(test_size+1):nrow, 1]'
 
 batch_data = DataLoader((X_train, Y_train), batchsize = 128, shuffle = true)
 
-opt = ADAM(.005)
+opt = ADAM(.001)
 
 hidden_size = div(ncol-1, 2) * 2
-hidden_size = (ncol - 1)
-m = Chain(Dense(ncol - 1, hidden_size, σ),Dense(hidden_size,hidden_size,σ),Dense(hidden_size, 1))
+hidden_size = 3*(ncol - 1)
+m = Chain(Dense(ncol - 1, hidden_size, relu),Dense(hidden_size,hidden_size, relu),Dense(hidden_size, 1))
 
 #m = Chain(Dense(ncol - 1, hidden_size, σ), Dense(hidden_size, 1))
 loss(x,y) = Flux.Losses.mse(m(x),y)
@@ -48,7 +48,7 @@ eval_loss(x,y) = mean(abs.((m(x) .- y) ./ y))
 #evalcb() = @show(loss(X_test, Y_test))
 evalcb() = @show([round(eval_loss(X_test, Y_test); digits=3), round(loss(X_test, Y_test); digits = 3),round(eval_loss(X_train, Y_train); digits=3), round(loss(X_train, Y_train); digits = 3)])
 #[(X_train,Y_train)],
-@epochs 200 Flux.train!(loss, Flux.params(m), batch_data, opt, cb = evalcb)
+@epochs 50 Flux.train!(loss, Flux.params(m), batch_data, opt, cb = evalcb)
 
 @save "/hpc/home/jml165/rl/bernvalneuralnets/bernvalnn_$(idx).bson" m
 
