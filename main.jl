@@ -30,7 +30,7 @@ const multi_count = 10
 const T = 100
 
 # NUMBER OF GLOBAL SIMULATION EPISODES (PER INDEX JOB)
-const n_episodes = 20
+const n_episodes = 1
 
 # DISCOUNT PARAMETER
 const discount = 1.
@@ -40,10 +40,10 @@ const epsilon = .4
 const decreasing = true
 # PARAMETERS FOR ALL ROLLOUT METHODS
 const rollout_length = 5
-const n_rollouts = 50
+const n_rollouts = 1000
 
 # PARAMETERS FOR SPSA OPTIMIZATION METHOD
-const n_opt_rollouts = 50
+const n_opt_rollouts = 1000
 const n_spsa_iter = 300
 
 
@@ -75,8 +75,8 @@ scale_list = []
 multi_neural_net_list = []
 multi_scale_list = []
 
-bernoulli_neural_net_list = []
-bernoulli_scale_list = []
+bern_neural_net_list = []
+bern_scale_list = []
 
 ## NEED TO DECIDE WHETHER TRUE IS USED
 for i in 1:T
@@ -1849,9 +1849,9 @@ const discount_vector = discount .^ collect(0:(T-1))
 #const multi_ind = [true, true]
 
 
-const run_policies = [epsilon_greedy_policy, thompson_policy, greedy_policy, bernoulli_val_greedy_rollout_policy, bernoulli_val_greedy_thompson_policy, bernoulli_val_better_grid_lambda_policy, bernoulli_greedy_rollout_policy]
-const multi_ind = [false, false, false, false, false, false, false]
-const bern_ind = [true, true, true, true, true, true, true]
+const run_policies = [epsilon_greedy_policy, epsilon_greedy_policy, thompson_policy, thompson_policy, greedy_policy, greedy_policy, glm_ucb_policy, glm_ucb_policy, ids_policy, ids_policy, val_greedy_rollout_policy, val_greedy_thompson_ucb_policy, val_better_grid_lambda_policy, greedy_rollout_policy, bernoulli_val_greedy_rollout_policy, bernoulli_val_greedy_thompson_ucb_policy, bernoulli_val_better_grid_lambda_policy, bernoulli_greedy_rollout_policy]
+const multi_ind = [false for i in 1:18]
+const bern_ind = [true, false, true, false, true, false, true, false, true, false, false, false, false, false, true, true, true, true]
 const coord_epsilon_greedy = false
 const coord_thompson = false
 const coord_ids = false

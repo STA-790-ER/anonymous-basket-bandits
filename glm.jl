@@ -267,14 +267,14 @@ function bernoulli_val_better_grid_lambda_policy(t, T, bandit_count, context, ba
 
             true_expected_rewards_logit = bandit_param * context
             true_expected_rewards = exp.(true_expected_rewards_logit) ./ (1 .+ exp.(true_expected_rewards_logit))
-            true_expected_reward = true_expected_rewards[bandits]
+            true_expected_reward = true_expected_rewards[bandit]
             #obs = randn() * sqrt(obs_sd^2 + dot(context, bandit_posterior_covs[action,:,:],context)) + true_expected_reward
             obs = 1 * (rand() < true_expected_reward)
 
             m_t, C_t, = update_approx_bernoulli(obs, temp_post_means[bandit, :], temp_post_covs[bandit, :, :], context, .00001)
             
-            temp_post_means[action, :] = m_t
-            temp_post_covs[action, :, :] = C_t
+            temp_post_means[bandit, :] = m_t
+            temp_post_covs[bandit, :, :] = C_t
 
 
 
@@ -319,6 +319,86 @@ function bernoulli_val_greedy_thompson_policy(t, T, bandit_count, context, bandi
 
     
     policies = [greedy_policy, thompson_policy]
+    policy_values = []
+    
+    println("Context Start: ", context)
+    flush(stdout)
+
+    lambda = [0, 0]
+
+    for policy in policies  
+
+            MEAN_REWARD = 0
+
+            for roll in 1:n_opt_rollouts
+            
+                copy!(temp_post_means, bandit_posterior_means)
+                copy!(temp_post_covs, bandit_posterior_covs)
+                #bandit_param = zeros(bandit_count, context_dim)
+                for bandit in 1:bandit_count
+                    copy!(temp_bandit_mean, (@view bandit_posterior_means[bandit,:]))
+                    copy!(temp_bandit_cov, (@view bandit_posterior_covs[bandit,:,:]))
+                    bandit_param[bandit,:] .= rand(MvNormal(temp_bandit_mean, temp_bandit_cov))
+                end
+
+                use_context = true
+                
+                rollout_value = bernoulli_val_rollout(policy, T-t+1, rollout_length, context, use_context, lambda, context_dim, context_mean,
+                    context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
+                    roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
+                
+                
+                MEAN_REWARD = ((roll - 1) * MEAN_REWARD + rollout_value) / roll
+
+            end
+            
+            push!(policy_values, MEAN_REWARD)
+        
+    end
+    
+    println("Context Finish: ", context)
+    flush(stdout)
+
+    opt_index = findmax(policy_values)[2]
+    opt_policy = policies[opt_index]
+
+    println("GREEDY: ", policy_values[1],", THOMPSON: ", policy_values[2])
+    flush(stdout)
+
+    # END OPTIMIZATION OF LAMBDA
+
+    
+    opt_act = opt_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+
+    println("Optimal Action: ",opt_act)
+    flush(stdout)
+
+    return opt_act
+
+end
+function bernoulli_val_greedy_thompson_ucb_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+
+    BANDIT_VALUES = zeros(bandit_count)
+    predictive_rewards = bandit_posterior_means * context
+
+## PREALLOCATION
+    roll_context = zeros(context_dim)
+    roll_true_expected_rewards = zeros(bandit_count)
+    roll_CovCon = zeros(context_dim)
+    roll_old_cov = zeros(context_dim, context_dim)
+    roll_SigInvMu = zeros(context_dim)
+
+    temp_post_means = zeros(bandit_count, context_dim)
+    temp_post_covs = zeros(bandit_count, context_dim, context_dim)
+    temp_bandit_mean = zeros(context_dim)
+    temp_bandit_cov = zeros(context_dim, context_dim)
+
+    bandit_param = zeros(bandit_count, context_dim)
+    true_expected_rewards = zeros(bandit_count)
+    grad_est = zeros(3)
+
+    
+    policies = [greedy_policy, thompson_policy, glm_ucb_policy]
     policy_values = []
     
     println("Context Start: ", context)
@@ -445,14 +525,14 @@ function bernoulli_val_greedy_rollout_policy(t, T, bandit_count, context, bandit
 
         true_expected_rewards_logit = bandit_param * context
         true_expected_rewards = exp.(true_expected_rewards_logit) ./ (1 .+ exp.(true_expected_rewards_logit))
-        true_expected_reward = true_expected_rewards[bandits]
+        true_expected_reward = true_expected_rewards[bandit]
         #obs = randn() * sqrt(obs_sd^2 + dot(context, bandit_posterior_covs[action,:,:],context)) + true_expected_reward
         obs = 1 * (rand() < true_expected_reward)
 
         m_t, C_t, = update_approx_bernoulli(obs, temp_post_means[bandit, :], temp_post_covs[bandit, :, :], context, .00001)
         
-        temp_post_means[action, :] = m_t
-        temp_post_covs[action, :, :] = C_t
+        temp_post_means[bandit, :] = m_t
+        temp_post_covs[bandit, :, :] = C_t
 
 
         rollout_value = bernoulli_val_greedy_rollout(T-t, rollout_length, lambda, context_dim, context_mean,
@@ -522,14 +602,14 @@ function bernoulli_greedy_rollout_policy(t, T, bandit_count, context, bandit_pos
         end
         true_expected_rewards_logit = bandit_param * context
         true_expected_rewards = exp.(true_expected_rewards_logit) ./ (1 .+ exp.(true_expected_rewards_logit))
-        true_expected_reward = true_expected_rewards[bandits]
+        true_expected_reward = true_expected_rewards[bandit]
         #obs = randn() * sqrt(obs_sd^2 + dot(context, bandit_posterior_covs[action,:,:],context)) + true_expected_reward
         obs = 1 * (rand() < true_expected_reward)
 
         m_t, C_t, = update_approx_bernoulli(obs, temp_post_means[bandit, :], temp_post_covs[bandit, :, :], context, .00001)
         
-        temp_post_means[action, :] = m_t
-        temp_post_covs[action, :, :] = C_t
+        temp_post_means[bandit, :] = m_t
+        temp_post_covs[bandit, :, :] = C_t
 
         rollout_value = bernoulli_greedy_rollout(T-t, rollout_length, lambda, context_dim, context_mean,
                 context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
@@ -582,10 +662,10 @@ function bernoulli_greedy_rollout(T_remainder, rollout_length, lambda, context_d
         #obs = randn() * sqrt(obs_sd^2 + dot(context, bandit_posterior_covs[action,:,:],context)) + true_expected_reward
         obs = 1 * (rand() < true_expected_reward)
 
-        m_t, C_t, = update_approx_bernoulli(obs, temp_post_means[action, :], temp_post_covs[action, :, :], context, .00001)
+        m_t, C_t, = update_approx_bernoulli(obs, bandit_posterior_means[action, :], bandit_posterior_covs[action, :, :], context, .00001)
         
-        temp_post_means[action, :] = m_t
-        temp_post_covs[action, :, :] = C_t
+        bandit_posterior_means[action, :] = m_t
+        bandit_posterior_covs[action, :, :] = C_t
         true_expected_reward = true_expected_rewards[action]
         disc_reward += true_expected_reward * discount^(t-1)
 
@@ -596,7 +676,7 @@ function bernoulli_greedy_rollout(T_remainder, rollout_length, lambda, context_d
 end
 
 
-function val_greedy_rollout(T_remainder, rollout_length, lambda, context_dim, context_mean,
+function bernoulli_val_greedy_rollout(T_remainder, rollout_length, lambda, context_dim, context_mean,
     context_sd, obs_sd, bandit_count, discount, bandit_posterior_covs, bandit_posterior_means, bandit_param,
 	context, true_expected_rewards, CovCon, old_cov, SigInvMu)
 
@@ -666,9 +746,9 @@ function val_greedy_rollout(T_remainder, rollout_length, lambda, context_dim, co
         input_vec = Vector(vec(bandit_posterior_means'))
         append!(input_vec, vcat([upper_triangular_vec(bandit_posterior_covs[a, :, :]) for a in 1:bandit_count]...))
         
-        scaled_input_vec = (input_vec .- scale_list[truncation_length][1:end .!= 1, 1]) ./ scale_list[truncation_length][1:end .!= 1, 2] 
+        scaled_input_vec = (input_vec .- bern_scale_list[truncation_length][1:end .!= 1, 1]) ./ bern_scale_list[truncation_length][1:end .!= 1, 2] 
         
-        disc_reward += (discount^min(T_remainder, rollout_length)) * (scale_list[truncation_length][1,2]*neural_net_list[truncation_length](scaled_input_vec)[1] + scale_list[truncation_length][1,1])
+        disc_reward += (discount^min(T_remainder, rollout_length)) * (bern_scale_list[truncation_length][1,2]*bern_neural_net_list[truncation_length](scaled_input_vec)[1] + bern_scale_list[truncation_length][1,1])
     
         
         # Evaluating parameters for sanity check
@@ -740,9 +820,9 @@ function bernoulli_val_rollout(policy, T_remainder, rollout_length, context, use
         input_vec = Vector(vec(bandit_posterior_means'))
         append!(input_vec, vcat([upper_triangular_vec(bandit_posterior_covs[a, :, :]) for a in 1:bandit_count]...))
         
-        scaled_input_vec = (input_vec .- scale_list[truncation_length][1:end .!= 1, 1]) ./ scale_list[truncation_length][1:end .!= 1, 2] 
+        scaled_input_vec = (input_vec .- bern_scale_list[truncation_length][1:end .!= 1, 1]) ./ bern_scale_list[truncation_length][1:end .!= 1, 2] 
         
-        disc_reward += (discount^min(T_remainder, rollout_length)) * (scale_list[truncation_length][1,2]*neural_net_list[truncation_length](scaled_input_vec)[1] + scale_list[truncation_length][1,1])
+        disc_reward += (discount^min(T_remainder, rollout_length)) * (bern_scale_list[truncation_length][1,2]*bern_neural_net_list[truncation_length](scaled_input_vec)[1] + bern_scale_list[truncation_length][1,1])
     
         
         # Evaluating parameters for sanity check
@@ -806,7 +886,7 @@ function bernoulli_val_better_rollout(T_remainder, curr_t, rollout_length, conte
         #obs = randn() * obs_sd + true_expected_reward
         
         # UNKNOWN PARAM VERSION
-        true_expected_reward_logit = true_expected_rewards[action, :]
+        true_expected_reward_logit = true_expected_rewards[action]
         true_expected_reward = exp(true_expected_reward_logit) / (1 + exp(true_expected_reward_logit))
         disc_reward += true_expected_reward * discount^(t-1)
 
@@ -828,9 +908,9 @@ function bernoulli_val_better_rollout(T_remainder, curr_t, rollout_length, conte
         input_vec = Vector(vec(bandit_posterior_means'))
         append!(input_vec, vcat([upper_triangular_vec(bandit_posterior_covs[a, :, :]) for a in 1:bandit_count]...))
         
-        scaled_input_vec = (input_vec .- scale_list[truncation_length][1:end .!= 1, 1]) ./ scale_list[truncation_length][1:end .!= 1, 2] 
+        scaled_input_vec = (input_vec .- bern_scale_list[truncation_length][1:end .!= 1, 1]) ./ bern_scale_list[truncation_length][1:end .!= 1, 2] 
         
-        disc_reward += (discount^min(T_remainder, rollout_length)) * (scale_list[truncation_length][1,2]*neural_net_list[truncation_length](scaled_input_vec)[1] + scale_list[truncation_length][1,1])
+        disc_reward += (discount^min(T_remainder, rollout_length)) * (bern_scale_list[truncation_length][1,2]*bern_neural_net_list[truncation_length](scaled_input_vec)[1] + bern_scale_list[truncation_length][1,1])
     
         
         # Evaluating parameters for sanity check
