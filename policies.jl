@@ -1632,6 +1632,166 @@ function val_greedy_thompson_ucb_policy(t, T, bandit_count, context, bandit_post
     return opt_act
 
 end
+function val_greedy_thompson_ucb_ids_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+
+    BANDIT_VALUES = zeros(bandit_count)
+    predictive_rewards = bandit_posterior_means * context
+
+## PREALLOCATION
+    roll_context = zeros(context_dim)
+    roll_true_expected_rewards = zeros(bandit_count)
+    roll_CovCon = zeros(context_dim)
+    roll_old_cov = zeros(context_dim, context_dim)
+    roll_SigInvMu = zeros(context_dim)
+
+    temp_post_means = zeros(bandit_count, context_dim)
+    temp_post_covs = zeros(bandit_count, context_dim, context_dim)
+    temp_bandit_mean = zeros(context_dim)
+    temp_bandit_cov = zeros(context_dim, context_dim)
+
+    bandit_param = zeros(bandit_count, context_dim)
+    true_expected_rewards = zeros(bandit_count)
+    grad_est = zeros(3)
+
+    
+    policies = [greedy_policy, thompson_policy, glm_ucb_policy, ids_policy]
+    policy_values = []
+    
+    println("Context Start: ", context)
+    flush(stdout)
+
+    lambda = [0, 0]
+
+    for policy in policies  
+
+            MEAN_REWARD = 0
+
+            for roll in 1:n_opt_rollouts
+            
+                copy!(temp_post_means, bandit_posterior_means)
+                copy!(temp_post_covs, bandit_posterior_covs)
+                #bandit_param = zeros(bandit_count, context_dim)
+                for bandit in 1:bandit_count
+                    copy!(temp_bandit_mean, (@view bandit_posterior_means[bandit,:]))
+                    copy!(temp_bandit_cov, (@view bandit_posterior_covs[bandit,:,:]))
+                    bandit_param[bandit,:] .= rand(MvNormal(temp_bandit_mean, temp_bandit_cov))
+                end
+
+                use_context = true
+                
+                rollout_value = val_rollout(policy, T-t+1, rollout_length, context, use_context, lambda, context_dim, context_mean,
+                    context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
+                    roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
+                
+                
+                MEAN_REWARD = ((roll - 1) * MEAN_REWARD + rollout_value) / roll
+
+            end
+            
+            push!(policy_values, MEAN_REWARD)
+        
+    end
+    
+    println("Context Finish: ", context)
+    flush(stdout)
+
+    opt_index = findmax(policy_values)[2]
+    opt_policy = policies[opt_index]
+
+    println("GREEDY: ", policy_values[1],", THOMPSON: ", policy_values[2])
+    flush(stdout)
+
+    # END OPTIMIZATION OF LAMBDA
+
+    
+    opt_act = opt_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+
+    println("Optimal Action: ",opt_act)
+    flush(stdout)
+
+    return opt_act
+
+end
+function val_generalized_ids_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+
+    BANDIT_VALUES = zeros(bandit_count)
+    predictive_rewards = bandit_posterior_means * context
+
+## PREALLOCATION
+    roll_context = zeros(context_dim)
+    roll_true_expected_rewards = zeros(bandit_count)
+    roll_CovCon = zeros(context_dim)
+    roll_old_cov = zeros(context_dim, context_dim)
+    roll_SigInvMu = zeros(context_dim)
+
+    temp_post_means = zeros(bandit_count, context_dim)
+    temp_post_covs = zeros(bandit_count, context_dim, context_dim)
+    temp_bandit_mean = zeros(context_dim)
+    temp_bandit_cov = zeros(context_dim, context_dim)
+
+    bandit_param = zeros(bandit_count, context_dim)
+    true_expected_rewards = zeros(bandit_count)
+    grad_est = zeros(3)
+
+    
+    policies = [ids_policy_0_5, ids_policy_4, ids_policy]
+    policy_values = []
+    
+    println("Context Start: ", context)
+    flush(stdout)
+
+    lambda = [0, 0]
+
+    for policy in policies  
+
+            MEAN_REWARD = 0
+
+            for roll in 1:n_opt_rollouts
+            
+                copy!(temp_post_means, bandit_posterior_means)
+                copy!(temp_post_covs, bandit_posterior_covs)
+                #bandit_param = zeros(bandit_count, context_dim)
+                for bandit in 1:bandit_count
+                    copy!(temp_bandit_mean, (@view bandit_posterior_means[bandit,:]))
+                    copy!(temp_bandit_cov, (@view bandit_posterior_covs[bandit,:,:]))
+                    bandit_param[bandit,:] .= rand(MvNormal(temp_bandit_mean, temp_bandit_cov))
+                end
+
+                use_context = true
+                
+                rollout_value = val_rollout(policy, T-t+1, rollout_length, context, use_context, lambda, context_dim, context_mean,
+                    context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
+                    roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
+                
+                
+                MEAN_REWARD = ((roll - 1) * MEAN_REWARD + rollout_value) / roll
+
+            end
+            
+            push!(policy_values, MEAN_REWARD)
+        
+    end
+    
+    println("Context Finish: ", context)
+    flush(stdout)
+
+    opt_index = findmax(policy_values)[2]
+    opt_policy = policies[opt_index]
+
+    println("GREEDY: ", policy_values[1],", THOMPSON: ", policy_values[2])
+    flush(stdout)
+
+    # END OPTIMIZATION OF LAMBDA
+
+    
+    opt_act = opt_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+
+    println("Optimal Action: ",opt_act)
+    flush(stdout)
+
+    return opt_act
+
+end
 function val_epsilon_greedy_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, n_eps)
 
     BANDIT_VALUES = zeros(bandit_count)
@@ -2442,7 +2602,7 @@ function ids_expected_regrets(context, bandit_posterior_means, bandit_posterior_
         mean_max_reward += findmax(reward_draws[:, i])[1] / niter
     end
     
-    res = mean_max_reward .- mean_rewards
+    res = max.(0, mean_max_reward .- mean_rewards)
 
     return res
 end
@@ -2453,6 +2613,15 @@ function ids_information_ratio(bandit_posterior_covs, context, action, regrets)
     gain = ids_expected_entropy_gain(bandit_posterior_covs[action, :, :], context)
     return -1*regrets[action]^2 / gain
 end
+function ids_information_ratio_0_5(bandit_posterior_covs, context, action, regrets)
+    gain = ids_expected_entropy_gain(bandit_posterior_covs[action, :, :], context)
+    print(regrets[action])
+    return -1*regrets[action]^.5 / gain
+end
+function ids_information_ratio_4(bandit_posterior_covs, context, action, regrets)
+    gain = ids_expected_entropy_gain(bandit_posterior_covs[action, :, :], context)
+    return -1*regrets[action]^4 / gain
+end
 
 
 function ids_expected_entropy_gain(cov, context)
@@ -2460,6 +2629,20 @@ function ids_expected_entropy_gain(cov, context)
 end
 
 # IDS
+function ids_policy_0_5(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+
+    regrets = ids_expected_regrets(context, bandit_posterior_means, bandit_posterior_covs, 1000)
+    
+
+    return findmax([ids_information_ratio_0_5(bandit_posterior_covs, context, act, regrets) for act=1:bandit_count])[2]
+end
+function ids_policy_4(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+
+    regrets = ids_expected_regrets(context, bandit_posterior_means, bandit_posterior_covs, 1000)
+    
+
+    return findmax([ids_information_ratio_4(bandit_posterior_covs, context, act, regrets) for act=1:bandit_count])[2]
+end
 function ids_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
 
     regrets = ids_expected_regrets(context, bandit_posterior_means, bandit_posterior_covs, 1000)
