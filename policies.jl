@@ -2615,7 +2615,7 @@ function ids_information_ratio(bandit_posterior_covs, context, action, regrets)
 end
 function ids_information_ratio_0_5(bandit_posterior_covs, context, action, regrets)
     gain = ids_expected_entropy_gain(bandit_posterior_covs[action, :, :], context)
-    print(regrets[action])
+    #print(regrets[action])
     return -1*regrets[action]^.5 / gain
 end
 function ids_information_ratio_4(bandit_posterior_covs, context, action, regrets)

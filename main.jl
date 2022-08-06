@@ -39,8 +39,8 @@ const discount = 1.
 const epsilon = .4
 const decreasing = true
 # PARAMETERS FOR ALL ROLLOUT METHODS
-const rollout_length = 7
-const n_rollouts = 20000
+const rollout_length = 20
+const n_rollouts = 100000
 
 # PARAMETERS FOR SPSA OPTIMIZATION METHOD
 const n_opt_rollouts = 100000
@@ -1853,9 +1853,9 @@ const discount_vector = discount .^ collect(0:(T-1))
 #const multi_ind = [false for i in 1:18]
 #const bern_ind = [true, false, true, false, true, false, true, false, true, false, false, false, false, false, true, true, true, true]
 
-const run_policies = [ids_policy, val_generalized_ids_policy]
-const multi_ind = [false, false]
-const bern_ind = [false, false]
+const run_policies = [greedy_policy, thompson_policy, bayes_ucb_policy]
+const multi_ind = [false, false, false]
+const bern_ind = [false, false, false]
 
 const coord_epsilon_greedy = false
 const coord_thompson = false
