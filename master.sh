@@ -2,6 +2,7 @@
 
 rm -f ~/slurmout/*
 rm -f ~/rl/arrayresults/*.csv
+rm -f ~/rl/arrayselectionresults/*.csv
 rm -f ~/rl/combresults/*.csv
 
 sbatch ~/rl/lawson-bandits/par.sh

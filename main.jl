@@ -30,7 +30,7 @@ const multi_count = 10
 const T = 100
 
 # NUMBER OF GLOBAL SIMULATION EPISODES (PER INDEX JOB)
-const n_episodes = 1
+const n_episodes = 3
 
 # DISCOUNT PARAMETER
 const discount = 1.
@@ -39,11 +39,11 @@ const discount = 1.
 const epsilon = .4
 const decreasing = true
 # PARAMETERS FOR ALL ROLLOUT METHODS
-const rollout_length = 20
-const n_rollouts = 100000
+const rollout_length = 20 # 20
+const n_rollouts = 100000 # 100000
 
 # PARAMETERS FOR SPSA OPTIMIZATION METHOD
-const n_opt_rollouts = 100000
+const n_opt_rollouts = 100000 # 100000
 const n_spsa_iter = 300
 
 
@@ -131,12 +131,11 @@ function ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n
             bandit_posterior_means[i, :] = repeat([bandit_prior_mean], context_dim)
             bandit_posterior_covs[i, :, :] = Diagonal(repeat([bandit_prior_sd^2], context_dim))
         end
-        
         for t in 1:T
             context = randn(context_dim) * context_sd .+ context_mean
             true_expected_rewards = true_bandit_param * context
             #true_expected_rewards = bandit_posterior_means * context
-            action = action_function(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+            action = action_function(ep, t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
             true_expected_reward = true_expected_rewards[action]
             EPREWARDS[t] = true_expected_reward
             EPOPTREWARDS[t] = maximum(true_expected_rewards)
@@ -1853,9 +1852,9 @@ const discount_vector = discount .^ collect(0:(T-1))
 #const multi_ind = [false for i in 1:18]
 #const bern_ind = [true, false, true, false, true, false, true, false, true, false, false, false, false, false, true, true, true, true]
 
-const run_policies = [greedy_policy, thompson_policy, bayes_ucb_policy]
-const multi_ind = [false, false, false]
-const bern_ind = [false, false, false]
+const run_policies = [val_greedy_thompson_policy]
+const multi_ind = [false]
+const bern_ind = [false]
 
 const coord_epsilon_greedy = false
 const coord_thompson = false

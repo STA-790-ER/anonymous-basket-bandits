@@ -1390,8 +1390,13 @@ function val_better_grid_lambda_policy(t, T, bandit_count, context, bandit_poste
     end
     opt_index = findmax(lambda_values)[2]
     lambda_param = lambdas[opt_index]
-
+    if (t == 1) && (ep == 1)
+        CSV.write("/hpc/home/jml165/rl/arrayselectionresults/selectionresults_$(idx).csv", Tables.table(vcat(t, lambda_param)'), header=["time", "param1","param2", "param3"])
+    else
+        CSV.write("/hpc/home/jml165/rl/arrayselectionresults/selectionresults_$(idx).csv", Tables.table(vcat(t, lambda_param)'), append=true)
+    end
     println(lambda_param[1],", ", lambda_param[2],", ", lambda_param[3])
+    
     flush(stdout)
 
     # END OPTIMIZATION OF LAMBDA
@@ -1471,7 +1476,7 @@ function val_better_grid_lambda_policy(t, T, bandit_count, context, bandit_poste
 end
 
 
-function val_greedy_thompson_policy(t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+function val_greedy_thompson_policy(ep, t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
 
     BANDIT_VALUES = zeros(bandit_count)
     predictive_rewards = bandit_posterior_means * context
@@ -1522,7 +1527,9 @@ function val_greedy_thompson_policy(t, T, bandit_count, context, bandit_posterio
                     context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
                     roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
                 
-                
+                #if roll == 1
+                #    MEAN_REWARD = rollout_value
+                #end
                 MEAN_REWARD = ((roll - 1) * MEAN_REWARD + rollout_value) / roll
 
             end
@@ -1537,6 +1544,11 @@ function val_greedy_thompson_policy(t, T, bandit_count, context, bandit_posterio
     opt_index = findmax(policy_values)[2]
     opt_policy = policies[opt_index]
 
+    if (t == 1) && (ep == 1)
+        CSV.write("/hpc/home/jml165/rl/arrayselectionresults/selectionresults_$(idx).csv", Tables.table([t String(Symbol(opt_policy))]), header=["time", "policy"])
+    else
+        CSV.write("/hpc/home/jml165/rl/arrayselectionresults/selectionresults_$(idx).csv", Tables.table([t String(Symbol(opt_policy))]), append=true)
+    end
     println("GREEDY: ", policy_values[1],", THOMPSON: ", policy_values[2])
     flush(stdout)
 
