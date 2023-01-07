@@ -48,7 +48,7 @@ eval_loss(x,y) = mean(abs.((m(x) .- y) ./ y))
 #evalcb() = @show(loss(X_test, Y_test))
 evalcb() = @show([round(eval_loss(X_test, Y_test); digits=3), round(loss(X_test, Y_test); digits = 3),round(eval_loss(X_train, Y_train); digits=3), round(loss(X_train, Y_train); digits = 3)])
 #[(X_train,Y_train)],
-@epochs 200 Flux.train!(loss, Flux.params(m), batch_data, opt, cb = evalcb)
+@epochs 12 Flux.train!(loss, Flux.params(m), batch_data, opt, cb = evalcb)
 
 @save "/hpc/home/jml165/rl/valneuralnets/valnn_$(idx).bson" m
 

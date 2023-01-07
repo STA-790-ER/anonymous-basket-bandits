@@ -1,5 +1,5 @@
 
-using LinearAlgebra, Statistics, Plots, Distributions, StatsBase, DelimitedFiles, CSV, Tables, Random, BenchmarkTools
+using LinearAlgebra, Statistics, Plots, Distributions, StatsBase, DelimitedFiles, CSV, Tables, Random, BenchmarkTools, DataFrames
 
 #using BayesianOptimization, GaussianProcesses, Distributions
 using Flux
@@ -12,21 +12,27 @@ include("policies.jl")
 include("opt_alloc.jl")
 include("coordinated_utilities.jl")
 include("glm.jl")
-include("mcmc.jl")
 #cnst mts = MersenneTwister.(1:Threads.nthreads())
-# Parameters
-const context_dim = 2
+# Parametersi
+#
+#
+
+const idx = Base.parse(Int, ENV["SLURM_ARRAY_TASK_ID"])
+gen_settings = CSV.read("generative_settings_3.csv", DataFrame, skipto = 1 + idx, limit = 1)
+
+const context_dim = gen_settings.context_dim[1]
 const context_mean = 0
-const context_sd = 1 
-const obs_sd = 1
+const context_sd = gen_settings.context_sd[1]
+const obs_sd = gen_settings.obs_sd[1]
 
-const bandit_count = 3
+const bandit_count = gen_settings.bandit_count[1]
 const bandit_prior_mean = 0
-const bandit_prior_sd = 10
+const bandit_prior_sd = gen_settings.prior_sd[1]
 
-prior_mean = repeat([bandit_prior_mean], context_dim)
-prior_cov = diagm(repeat([bandit_prior_sd^2], context_dim))
-const proposal_sd = .1
+print(context_dim)
+print(context_sd)
+print(obs_sd)
+print(bandit_prior_sd)
 
 # Multi Action
 const multi_count = 10
@@ -35,7 +41,7 @@ const multi_count = 10
 const T = 100
 
 # NUMBER OF GLOBAL SIMULATION EPISODES (PER INDEX JOB)
-const n_episodes = 1
+const n_episodes = 5000
 
 # DISCOUNT PARAMETER
 const discount = 1.
@@ -44,11 +50,11 @@ const discount = 1.
 const epsilon = .4
 const decreasing = true
 # PARAMETERS FOR ALL ROLLOUT METHODS
-const rollout_length = 10 # 20
-const n_rollouts = 10000 # 100000
+const rollout_length = 20 # 20
+const n_rollouts = 100000 # 100000
 
 # PARAMETERS FOR SPSA OPTIMIZATION METHOD
-const n_opt_rollouts = 10000 # 100000
+const n_opt_rollouts = 100000 # 100000
 const n_spsa_iter = 300
 
 
@@ -72,14 +78,9 @@ grid_margin_3 = [1., 2.]
 ### NON STATIONARY PARAMETERS
 
 const delta = .95
-
-
-
-
 ## SIMULATOR FUNCTION
 
 
-const idx = Base.parse(Int, ENV["SLURM_ARRAY_TASK_ID"])
 
 neural_net_list = []
 scale_list = []
@@ -90,9 +91,9 @@ multi_scale_list = []
 bern_neural_net_list = []
 bern_scale_list = []
 
-use_nn = true
-
+use_nn = false
 ## NEED TO DECIDE WHETHER TRUE IS USED
+
 if use_nn
 for i in 1:T
     @load "/hpc/home/jml165/rl/valneuralnets/valnn_$(i).bson" m
@@ -137,8 +138,9 @@ function ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n
     
         bandit_posterior_means = zeros(bandit_count, context_dim)
         bandit_posterior_covs = zeros(bandit_count, context_dim, context_dim)
-    	bandit_param = copy(global_bandit_param)
-        true_bandit_param = copy(global_bandit_param)
+    	#bandit_param = copy(global_bandit_param)
+        #true_bandit_param = copy(global_bandit_param)
+        true_bandit_param = rand(Normal(bandit_prior_mean, bandit_prior_sd), bandit_count, context_dim)
         EPREWARDS = zeros(T)
 	    EPOPTREWARDS = zeros(T)
 
@@ -163,11 +165,14 @@ function ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n
 	        bandit_posterior_covs[action, :, :] = ((bandit_posterior_covs[action,:,:]) + bandit_posterior_covs[action,:,:]')/2
 	        bandit_posterior_means[action, :] = (bandit_posterior_covs[action, :, :]) * (old_cov \ (bandit_posterior_means[action,:]) + context * obs / obs_sd^2)
 
-	        println("Ep: ", ep, " - ", t, " of ", T, " for ", String(Symbol(action_function)))
+	        #println("Ep: ", ep, " - ", t, " of ", T, " for ", String(Symbol(action_function)))
             flush(stdout)
 
 
         end
+        #print("\n")
+        #print(sum(EPOPTREWARDS) - sum(EPREWARDS))
+        #print("\n")
 	return EPREWARDS, EPOPTREWARDS
 end
 
@@ -181,20 +186,18 @@ function contextual_bandit_simulator(action_function, T, rollout_length, n_episo
 
     ## USING BAYESIAN FORMULATION FOR FAIR COMPARISON
     #global_bandit_param = [1 0; 0 1; 2 -1]
+    global_bandit_param = rand(Normal(bandit_prior_mean, bandit_prior_sd), bandit_count, context_dim)
     
     
     #threadreps = zeros(Threads.nthreads())
 
 
     for ep in 1:n_episodes
-    
-        global_bandit_param = rand(Normal(bandit_prior_mean, bandit_prior_sd), bandit_count, context_dim)
         EPREWARDS, EPOPTREWARDS = ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
                                        context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon, global_bandit_param)
         ep_count += 1
 	    REWARDS[:, ep] = EPREWARDS
 	    OPTREWARDS[:, ep] = EPOPTREWARDS
-    
     end
     #print(threadreps)
     return REWARDS', OPTREWARDS'
@@ -1848,8 +1851,6 @@ function coord_multi_contextual_bandit_simulator(action_function, T, rollout_len
 
 end
 
-
-
 ###################################
 # Non Stationary Model
 # #################################
@@ -1897,7 +1898,7 @@ function dlm_ep_contextual_bandit_simulator(ep,action_function, T, rollout_lengt
                 bandit_posterior_covs[i, :, :] .*= (1 / delta)
             end
 
-	        println("Ep: ", ep, " - ", t, " of ", T, " for ", String(Symbol(action_function)))
+	        #println("Ep: ", ep, " - ", t, " of ", T, " for ", String(Symbol(action_function)))
             flush(stdout)
 
 
@@ -1934,16 +1935,6 @@ function dlm_contextual_bandit_simulator(action_function, T, rollout_length, n_e
     return REWARDS', OPTREWARDS'
 end
 
-
-
-
-
-
-
-
-
-
-
 ## SIMULATIONS
 
 # Sims
@@ -1964,12 +1955,10 @@ const discount_vector = discount .^ collect(0:(T-1))
 #const multi_ind = [false for i in 1:18]
 #const bern_ind = [true, false, true, false, true, false, true, false, true, false, false, false, false, false, true, true, true, true]
 
-const run_policies = [mcmc_greedy_policy, mcmc_thompson_policy, mcmc_glm_ucb_policy, mcmc_ids_policy, mcmc_bernoulli_val_greedy_thompson_policy]
-#const run_policies = [greedy_policy, thompson_policy, bayes_ucb_policy, ids_policy]
-const multi_ind = [false, false, false, false, false]
-const bern_ind = [false, false, false, false, false]
-const dlm_ind = [false, false, false, false, false]
-const mcmc_bern_ind = [true, true, true, true, true]
+const run_policies = [thompson_policy_4, thompson_policy_2, thompson_policy_0_5, thompson_policy_0_25, greedy_policy, thompson_policy, bayes_ucb_policy, ids_policy]
+const multi_ind = [false, false, false, false, false, false, false, false]
+const bern_ind = [false, false, false, false, false, false, false, false]
+const dlm_ind = [true, true, true, true, true, true, true, true]
 
 const coord_epsilon_greedy = false
 const coord_thompson = false
@@ -1999,12 +1988,6 @@ for pol in 1:length(run_policies)
         pol_rewards, pol_opt_rewards = dlm_contextual_bandit_simulator(run_policies[pol], T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
                                             context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon, delta)
         push!(regret_header, "$(run_policies[pol])")
-    
-    elseif mcmc_bern_ind[pol]
-        pol_rewards, pol_opt_rewards = mcmc_bernoulli_contextual_bandit_simulator(run_policies[pol], T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean, context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
-        push!(regret_header, "$(run_policies[pol])_mcmc_bern")
-
-    
     else
         pol_rewards, pol_opt_rewards = contextual_bandit_simulator(run_policies[pol], T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
                                             context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
@@ -2014,6 +1997,8 @@ for pol in 1:length(run_policies)
     print("\n")
 
     pol_cumulative_discounted_regret = cumsum(discount_vector .* [mean(c) for c in eachcol(pol_opt_rewards - pol_rewards)])
+    #print(((pol_opt_rewards - pol_rewards)[:, T]))
+    #print("\n")
     cumulative_discounted_regrets[:, pol] = pol_cumulative_discounted_regret
 
 end
@@ -2071,9 +2056,11 @@ if coord_thompson_ids_2
     count += 1
 end
 
-
+#print([idx; cumulative_discounted_regrets[T, :]])
+#print(["Index"; regret_header])
 #const combReg = [greedyCumDiscReg epsgreedyCumDiscReg thompsonCumDiscReg bayesucbCumDiscReg squarecbCumDiscReg lambdaCumDiscReg lambdameanCumDiscReg greedyrolloutCumDiscReg betterlambdaCumDiscReg optlambdaCumDiscReg bayesoptlambdaCumDiscReg]
-
+#print(cumulative_discounted_regrets)
+#print("\n")
 #const combReg = [greedyCumDiscReg thompsonCumDiscReg greedyrolloutCumDiscReg valgreedyrolloutCumDiscReg valbettergridlambdaCumDiscReg valgreedythompsonCumDiscReg]
-CSV.write("/hpc/home/jml165/rl/arrayresults/results_$(idx).csv", Tables.table(cumulative_discounted_regrets), header=regret_header)
+CSV.write("/hpc/home/jml165/rl/genarrayresults/results_$(idx).csv", Tables.table([idx cumulative_discounted_regrets[T:T, :]]), header=["Index"; regret_header])
 #CSV.write("/hpc/home/jml165/rl/arrayresults/results_$(idx).csv",  Tables.table(combReg), header=["Greedy", "EpsGreedy", "Thompson", "BayesUCB", "SquareCB", "Lambda","LambdaMean","GreedyRollout", "BetterLambda","OptLambda", "BayesOptLambda"])

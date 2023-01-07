@@ -10,22 +10,22 @@ to = TimerOutput()
 
 #const mts = MersenneTwister.(1:Threads.nthreads())
 # Parameters
-const context_dim = 2
+const context_dim = 1
 const context_mean = 0
-const context_sd = 1
-const obs_sd = 1
+const context_sd = .5
+const obs_sd = 2.5
 
 const bandit_count = 3
 const bandit_prior_mean = 0
-const bandit_prior_sd = 10
+const bandit_prior_sd = .25
 
-const n_episodes = 100000
+const n_episodes = 10000
 
 const discount = 1.
 const epsilon = .01
 
 const rollout_length = 100
-const n_rollouts = 100000
+const n_rollouts = 10000
 const n_opt_rollouts = 10
 const n_spsa_iter = 10
 
@@ -35,7 +35,7 @@ const grid_num = 6
 const int_length = 2
 const n_grid_rollouts = 50
 
-const n_points = 200
+const n_points = 100
 
 
 # Multi Action
@@ -88,7 +88,7 @@ function grid_contextual_bandit_simulator(n_points, action_function, T, rollout_
 #        GRID_POST_MEANS[((i-1)*n_episodes+1):(i*n_episodes), :, :, :] = TOT_POST_MEANS
 #        GRID_POST_COVS[((i-1)*n_episodes+1):(i*n_episodes), :, :, :, :] = TOT_POST_COVS
 
-        if i % 100 == 0 
+        if i % 5 == 0 
 	        println("Point Count: ", i, " for ", String(Symbol(action_function)))
             flush(stdout)
         end
@@ -145,13 +145,14 @@ function ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n
         old_cov = bandit_posterior_covs[action, :, :]
         CovCon = old_cov * context ./ obs_sd
         #bandit_posterior_covs[action, :, :] = inv(context * context' / obs_sd^2 + old_precision)
-        bandit_posterior_covs[action, :, :] = old_cov - CovCon * CovCon' ./ (1 + dot(context, old_cov, context))
+        bandit_posterior_covs[action, :, :] = old_cov - CovCon * CovCon' ./ (1 + dot(context, old_cov, context) / obs_sd^2)
         bandit_posterior_covs[action, :, :] = ((bandit_posterior_covs[action,:,:]) + (bandit_posterior_covs[action,:,:])')/2
         bandit_posterior_means[action, :] = (bandit_posterior_covs[action, :, :]) * (old_cov \ (bandit_posterior_means[action,:]) + context * obs / obs_sd^2)
 
         #println("Ep: ", ep, " - ", t, " of ", T, " for ", String(Symbol(action_function)))
         #    flush(stdout)
 
+        #bandit_posterior_covs[action, :, :] = inv(context * context' / obs_sd^2 + old_precision)
         #io = open("~/rl/monitor/monitor_$(idx).txt", "r")
         #curr_prog = read(io, Int)
         #close(io)
@@ -568,7 +569,7 @@ end
 
 print("\n")
 
-@time GRID_REWARDS, GRID_POST_MEANS, GRID_POST_COVS = bernoulli_grid_contextual_bandit_simulator(n_points, greedy_policy, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
+@time GRID_REWARDS, GRID_POST_MEANS, GRID_POST_COVS = grid_contextual_bandit_simulator(n_points, greedy_policy, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
     context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
 
 #print(GRID_REWARDS)

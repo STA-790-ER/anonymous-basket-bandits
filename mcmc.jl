@@ -1,83 +1,71 @@
 using SpecialFunctions
+using Distributions
 
-# find beta prior parameters from normal parameters with f=mean and q=variance
-function solve_beta_param(f, q, err)
-    r_curr = min(10,(1 + exp(f)) / q)
-    s_curr = min(10,(1 + exp(-f)) / q)
-    #log_r_curr = log(r_curr)
-    #log_s_curr = log(s_curr)
-    
-    f_gap = digamma(r_curr) - digamma(s_curr) - f
-    q_gap = trigamma(r_curr) + trigamma(s_curr) - q
-    while (abs(f_gap) + abs(q_gap) > err)
-        #print("\n$(abs(f_gap) + abs(q_gap))\n")
-        trigamma_r = trigamma(r_curr)
-        trigamma_s = trigamma(s_curr)
-        quadgamma_r = polygamma(2, r_curr)
-        quadgamma_s = polygamma(2, s_curr)
-        divisor = (trigamma_r * quadgamma_s + trigamma_s * quadgamma_r)
-        r_step = (f_gap * quadgamma_s + q_gap * trigamma_s) / divisor
-        s_step = (q_gap * trigamma_r - f_gap * quadgamma_r) / divisor
-        
-        while (r_step > r_curr)
-            r_step /= 2
-        end
-        while (s_step > s_curr)
-            s_step /= 2
-        end
-        
-        #r_curr = abs(r_curr)
-        #s_curr = abs(s_curr)
-        #if (r_curr < 0)
-        #    r_curr = 1
-        #end
-        #if (s_curr < 0)
-        #    s_curr = 1
-        #end
-        r_curr -= r_step
-        s_curr -= s_step
-        
-        f_gap = digamma(r_curr) - digamma(s_curr) - f
-        q_gap = trigamma(r_curr) + trigamma(s_curr) - q
-        #print("\nFGAP:$(f_gap),QGAP:$(q_gap)\n")
-        #flush(stdout)
+function logit_mcmc_update_check(theta_old, theta_new, X, y, prior_mean, prior_cov)
+
+    dist = MvNormal(prior_mean, prior_cov)
+
+    probs_old = 1 ./ (1 .+ exp.(-1 .* X * theta_old))
+    probs_new = 1 ./ (1 .+ exp.(-1 .* X * theta_new))
+
+    L_old = prod(probs_old .^ y) * prod((1 .- probs_old) .^ (1 .- y))
+    L_new = prod(probs_new .^ y) * prod((1 .- probs_new) .^ (1 .- y))
+
+    L_prior_old = pdf(dist, theta_old)
+    L_prior_new = pdf(dist, theta_new)
+
+    L_tot_old = L_old * L_prior_old
+    L_tot_new = L_new * L_prior_new
+
+    accept_prob = min(1, L_tot_new / L_tot_old)
+
+    u = rand()
+
+    if u < accept_prob
+        return theta_new
+    else
+        return theta_old
     end
 
-    return [r_curr, s_curr]
+
 
 end
 
-function update_approx_bernoulli(y, a, R, F, err)
 
-    f = dot(a, F)
-    q = dot(F, R, F)
 
-    r, s = solve_beta_param(f, q, err)
+function logit_mcmc_update(theta_old, X, y, prior_mean, prior_cov, proposal_sd)
 
-    r += y
-    s += (1-y)
+    theta_new = theta_old .+ proposal_sd .* randn(length(theta_old))
 
-    f_star = digamma(r) - digamma(s)
-    q_star = trigamma(r) + trigamma(s)
-    #print("\nSTART\n")
-    #print("$(y)\n$(a)\n$(f)\n$(q)\n$(r)\n$(s)$(f_star)\n$(q_star)\n")
-    #print(q_star)
-    #print(R)
-    #print("\n")
-    #print("$(F)")
-    #print("\n")
-    RF = R * F
-    #print(RF * RF')
-    #print("\n")
-    m = a .+ RF .* (f_star - f) / q
-    C = R .- RF * RF' .* (1 - q_star / q) ./ q
-    C = (C + C') ./ 2
-    #print(C)
-    #flush(stdout)
-    return m, C
+    return logit_mcmc_update_check(theta_old, theta_new, X, y, prior_mean, prior_cov)
+
 end
 
-function bernoulli_ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
+function sample_mcmc(X, y, prior_mean, prior_cov, proposal_sd, n_samp, n_burn)
+
+    if (size(X)[1] == 0)
+        return rand(MvNormal(prior_mean, prior_cov), n_samp)'
+    end
+    
+    theta_curr = zeros(context_dim)
+
+    THETA = zeros((n_samp+n_burn), context_dim)
+
+    for i in 1:(n_samp+n_burn)
+
+        theta_curr = logit_mcmc_update(theta_curr, X, y, prior_mean, prior_cov, proposal_sd)
+        THETA[i, :] = theta_curr
+    end
+
+    return THETA[(n_burn+1):(n_burn+n_samp), :]
+end
+
+
+
+# find beta prior parameters from normal parameters with f=mean and q=variance
+
+
+function mcmc_bernoulli_ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
     context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon, global_bandit_param)
         
     
@@ -87,6 +75,10 @@ function bernoulli_ep_contextual_bandit_simulator(ep,action_function, T, rollout
         true_bandit_param = copy(global_bandit_param)
         EPREWARDS = zeros(T)
 	    EPOPTREWARDS = zeros(T)
+        
+        X_tot = zeros(T, context_dim)
+        Y_tot = zeros(T)
+        A_tot = zeros(T)
 
         for i in 1:bandit_count
             bandit_posterior_means[i, :] = repeat([bandit_prior_mean], context_dim)
@@ -98,17 +90,16 @@ function bernoulli_ep_contextual_bandit_simulator(ep,action_function, T, rollout
             true_expected_rewards_logit = true_bandit_param * context
             true_expected_rewards = exp.(true_expected_rewards_logit) ./ (1 .+ exp.(true_expected_rewards_logit))
             #true_expected_rewards = bandit_posterior_means * context
-            action = action_function(ep, t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+            action = action_function(ep, t, T, bandit_count, context, X_tot, Y_tot, A_tot, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
             true_expected_reward = true_expected_rewards[action]
             EPREWARDS[t] = true_expected_reward
             EPOPTREWARDS[t] = maximum(true_expected_rewards)
             #obs = randn() * sqrt(obs_sd^2 + dot(context, bandit_posterior_covs[action,:,:],context)) + true_expected_reward
             obs = 1 * (rand() < true_expected_reward)
-
-            m_t, C_t, = update_approx_bernoulli(obs, bandit_posterior_means[action, :], bandit_posterior_covs[action, :, :], context, .00001)
+            Y_tot[t] = obs
+            A_tot[t] = action
+            X_tot[t, :] = context
             
-            bandit_posterior_means[action, :] = m_t
-            bandit_posterior_covs[action, :, :] = C_t
 
 	        println("Ep: ", ep, " - ", t, " of ", T, " for ", String(Symbol(action_function)))
             flush(stdout)
@@ -117,7 +108,7 @@ function bernoulli_ep_contextual_bandit_simulator(ep,action_function, T, rollout
 	return EPREWARDS, EPOPTREWARDS
 end
 
-function bernoulli_contextual_bandit_simulator(action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
+function mcmc_bernoulli_contextual_bandit_simulator(action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
     context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
 
     REWARDS = zeros(T, n_episodes)
@@ -134,7 +125,7 @@ function bernoulli_contextual_bandit_simulator(action_function, T, rollout_lengt
 
     for ep in 1:n_episodes
         global_bandit_param = rand(Normal(bandit_prior_mean, bandit_prior_sd), bandit_count, context_dim)
-        EPREWARDS, EPOPTREWARDS = bernoulli_ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
+        EPREWARDS, EPOPTREWARDS = mcmc_bernoulli_ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
                                        context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon, global_bandit_param)
         ep_count += 1
 	REWARDS[:, ep] = EPREWARDS
@@ -148,7 +139,7 @@ end
 # POLICIES
 # #######################################################################
 
-function bernoulli_val_better_grid_lambda_policy(ep, t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+function mcmc_bernoulli_val_better_grid_lambda_policy(ep, t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
 
     BANDIT_VALUES = zeros(bandit_count)
     predictive_rewards = bandit_posterior_means * context
@@ -296,29 +287,29 @@ function bernoulli_val_better_grid_lambda_policy(ep, t, T, bandit_count, context
 end
 
 
-function bernoulli_val_greedy_thompson_policy(ep, t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+function mcmc_bernoulli_val_greedy_thompson_policy(ep, t, T, bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
 
-    BANDIT_VALUES = zeros(bandit_count)
-    predictive_rewards = bandit_posterior_means * context
+    #BANDIT_VALUES = zeros(bandit_count)
+    #predictive_rewards = bandit_posterior_means * context
 
 ## PREALLOCATION
-    roll_context = zeros(context_dim)
+    #roll_context = zeros(context_dim)
     roll_true_expected_rewards = zeros(bandit_count)
-    roll_CovCon = zeros(context_dim)
-    roll_old_cov = zeros(context_dim, context_dim)
-    roll_SigInvMu = zeros(context_dim)
+    #roll_CovCon = zeros(context_dim)
+    #roll_old_cov = zeros(context_dim, context_dim)
+    #roll_SigInvMu = zeros(context_dim)
 
-    temp_post_means = zeros(bandit_count, context_dim)
-    temp_post_covs = zeros(bandit_count, context_dim, context_dim)
-    temp_bandit_mean = zeros(context_dim)
-    temp_bandit_cov = zeros(context_dim, context_dim)
+    #temp_post_means = zeros(bandit_count, context_dim)
+    #temp_post_covs = zeros(bandit_count, context_dim, context_dim)
+    #temp_bandit_mean = zeros(context_dim)
+    #temp_bandit_cov = zeros(context_dim, context_dim)
 
     bandit_param = zeros(bandit_count, context_dim)
-    true_expected_rewards = zeros(bandit_count)
-    grad_est = zeros(3)
+    #true_expected_rewards = zeros(bandit_count)
+    #grad_est = zeros(3)
 
     
-    policies = [greedy_policy, thompson_policy]
+    policies = [mcmc_greedy_policy, mcmc_thompson_policy]
     policy_values = []
     
     println("Context Start: ", context)
@@ -332,21 +323,22 @@ function bernoulli_val_greedy_thompson_policy(ep, t, T, bandit_count, context, b
 
             for roll in 1:n_opt_rollouts
             
-                copy!(temp_post_means, bandit_posterior_means)
-                copy!(temp_post_covs, bandit_posterior_covs)
+                #copy!(temp_post_means, bandit_posterior_means)
+                #copy!(temp_post_covs, bandit_posterior_covs)
                 #bandit_param = zeros(bandit_count, context_dim)
                 for bandit in 1:bandit_count
-                    copy!(temp_bandit_mean, (@view bandit_posterior_means[bandit,:]))
-                    copy!(temp_bandit_cov, (@view bandit_posterior_covs[bandit,:,:]))
-                    bandit_param[bandit,:] .= rand(MvNormal(temp_bandit_mean, temp_bandit_cov))
+                    #copy!(temp_bandit_mean, (@view bandit_posterior_means[bandit,:]))
+                    #copy!(temp_bandit_cov, (@view bandit_posterior_covs[bandit,:,:]))
+                    samp = sample_mcmc(X[A .== bandit,:], y[A .== bandit], prior_mean, prior_cov, proposal_sd, 1, 100)
+                    bandit_param[bandit,:] = samp
                 end
 
                 use_context = true
                 
-                rollout_value = bernoulli_val_rollout(ep, policy, T-t+1, rollout_length, context, use_context, lambda, context_dim, context_mean,
-                    context_sd, obs_sd, bandit_count, discount, temp_post_covs, temp_post_means, bandit_param,
-                    roll_true_expected_rewards, roll_CovCon, roll_old_cov, roll_SigInvMu)
-                
+                rollout_value = mcmc_bernoulli_val_rollout(ep, policy, T-t+1, rollout_length, context, use_context, lambda, context_dim, context_mean,
+                    context_sd, obs_sd, bandit_count, discount, X, y, A, bandit_param,
+                    roll_true_expected_rewards)
+                A[t:T] .= 0
                 
                 MEAN_REWARD = ((roll - 1) * MEAN_REWARD + rollout_value) / roll
 
@@ -368,7 +360,7 @@ function bernoulli_val_greedy_thompson_policy(ep, t, T, bandit_count, context, b
     # END OPTIMIZATION OF LAMBDA
 
     
-    opt_act = opt_policy(ep, t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+    opt_act = opt_policy(ep, t, T, bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
 
     println("Optimal Action: ",opt_act)
     flush(stdout)
@@ -376,7 +368,7 @@ function bernoulli_val_greedy_thompson_policy(ep, t, T, bandit_count, context, b
     return opt_act
 
 end
-function bernoulli_val_greedy_thompson_ucb_policy(ep, t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+function mcmc_bernoulli_val_greedy_thompson_ucb_policy(ep, t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
 
     BANDIT_VALUES = zeros(bandit_count)
     predictive_rewards = bandit_posterior_means * context
@@ -456,7 +448,7 @@ function bernoulli_val_greedy_thompson_ucb_policy(ep, t, T, bandit_count, contex
     return opt_act
 
 end
-function bernoulli_val_greedy_thompson_ucb_ids_policy(ep, t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+function mcmc_bernoulli_val_greedy_thompson_ucb_ids_policy(ep, t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
 
     BANDIT_VALUES = zeros(bandit_count)
     predictive_rewards = bandit_posterior_means * context
@@ -538,7 +530,7 @@ function bernoulli_val_greedy_thompson_ucb_ids_policy(ep, t, T, bandit_count, co
 end
 
 
-function bernoulli_val_greedy_rollout_policy(ep, t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+function mcmc_bernoulli_val_greedy_rollout_policy(ep, t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
 
     predictive_rewards = bandit_posterior_means * context
 
@@ -627,7 +619,7 @@ function bernoulli_val_greedy_rollout_policy(ep, t, T, bandit_count, context, ba
 end
 
 
-function bernoulli_greedy_rollout_policy(ep, t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+function mcmc_bernoulli_greedy_rollout_policy(ep, t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
 
     predictive_rewards = bandit_posterior_means * context
 
@@ -701,7 +693,7 @@ function bernoulli_greedy_rollout_policy(ep, t, T, bandit_count, context, bandit
     end
     return findmax(BANDIT_VALUES)[2]
 end
-function bernoulli_greedy_rollout(ep, T_remainder, rollout_length, lambda, context_dim, context_mean,
+function mcmc_bernoulli_greedy_rollout(ep, T_remainder, rollout_length, lambda, context_dim, context_mean,
     context_sd, obs_sd, bandit_count, discount, bandit_posterior_covs, bandit_posterior_means, bandit_param,
 	context, true_expected_rewards, CovCon, old_cov, SigInvMu)
 
@@ -756,7 +748,7 @@ function bernoulli_greedy_rollout(ep, T_remainder, rollout_length, lambda, conte
 end
 
 
-function bernoulli_val_greedy_rollout(ep, T_remainder, rollout_length, lambda, context_dim, context_mean,
+function mcmc_bernoulli_val_greedy_rollout(ep, T_remainder, rollout_length, lambda, context_dim, context_mean,
     context_sd, obs_sd, bandit_count, discount, bandit_posterior_covs, bandit_posterior_means, bandit_param,
 	context, true_expected_rewards, CovCon, old_cov, SigInvMu)
 
@@ -844,18 +836,20 @@ function bernoulli_val_greedy_rollout(ep, T_remainder, rollout_length, lambda, c
     return disc_reward
 
 end
-function bernoulli_val_rollout(ep, policy, T_remainder, rollout_length, context, use_context, lambda, context_dim, context_mean,
-    context_sd, obs_sd, bandit_count, discount, bandit_posterior_covs, bandit_posterior_means, bandit_param,
-	true_expected_rewards, CovCon, old_cov, SigInvMu)
+function mcmc_bernoulli_val_rollout(ep, policy, T_remainder, rollout_length, context, use_context, lambda, context_dim, context_mean,
+    context_sd, obs_sd, bandit_count, discount, X, y, A, bandit_param,
+	true_expected_rewards)
 
     disc_reward = 0
     #fill!(context, 0.0)
     fill!(true_expected_rewards, 0.0)
-    fill!(CovCon, 0.0)
-    fill!(old_cov,0.0)
-    fill!(SigInvMu,0.0)
+    #fill!(CovCon, 0.0)
+    #fill!(old_cov,0.0)
+    #fill!(SigInvMu,0.0)
     
     truncation_length = T_remainder - min(T_remainder, rollout_length)
+    
+    t_curr = T - T_remainder + 1
 
     for t in 1:min(T_remainder, rollout_length)
 
@@ -868,7 +862,7 @@ function bernoulli_val_rollout(ep, policy, T_remainder, rollout_length, context,
             context = randn(context_dim) * context_sd .+ context_mean
         end
 
-        action = policy(ep, t, min(T_remainder, rollout_length), bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+        action = policy(ep, t_curr, min(T_remainder, rollout_length), bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
 
 
         # TRUE PARAM VERSION
@@ -876,29 +870,36 @@ function bernoulli_val_rollout(ep, policy, T_remainder, rollout_length, context,
         #disc_reward += true_expected_reward * discount^(t-1)
         #obs = randn() * obs_sd + true_expected_reward
         
-        true_expected_reward_logit = dot(bandit_posterior_means[action,:], context)
+        true_expected_reward_logit = dot(bandit_param[action,:], context)
         true_expected_reward = exp(true_expected_reward_logit) / (1 + exp(true_expected_reward_logit))
         disc_reward += true_expected_reward * discount^(t-1)
 
         obs = 1 * (rand() < true_expected_reward)
-
-        m_t, C_t, = update_approx_bernoulli(obs, bandit_posterior_means[action, :], bandit_posterior_covs[action, :, :], context, .00001)
         
-        bandit_posterior_means[action, :] = m_t
-        bandit_posterior_covs[action, :, :] = C_t
+        y[t_curr + t - 1] = obs
+        A[t_curr + t - 1] = action
+        X[(t_curr + t - 1), :] = context
+        
         # UNKNOWN PARAM VERSION
     end
 
 
     if truncation_length > 0
         
+        trunc_means = zeros(bandit_count, context_dim)
+        trunc_covs = zeros(bandit_count, context_dim, context_dim)
         
+        for k in 1:bandit_count
+            samp = sample_mcmc(X[A .== k,:], y[A .== k], prior_mean, prior_cov, proposal_sd, 1000, 100)
+            trunc_means[k, :] = mean(samp, dims = 1)
+            trunc_covs[k, :, :] = cov(samp)
+        end
         #### SWITCHED TO TRUE VALUE NEURAL NETWORK AS TEST
         
         #input_vec = Vector(vec(bandit_param'))
         #append!(input_vec, Vector(vec(bandit_posterior_means')))
-        input_vec = Vector(vec(bandit_posterior_means'))
-        append!(input_vec, vcat([upper_triangular_vec(bandit_posterior_covs[a, :, :]) for a in 1:bandit_count]...))
+        input_vec = Vector(vec(trunc_means'))
+        append!(input_vec, vcat([upper_triangular_vec(trunc_covs[a, :, :]) for a in 1:bandit_count]...))
         
         scaled_input_vec = (input_vec .- bern_scale_list[truncation_length][1:end .!= 1, 1]) ./ bern_scale_list[truncation_length][1:end .!= 1, 2] 
         
@@ -918,7 +919,7 @@ function bernoulli_val_rollout(ep, policy, T_remainder, rollout_length, context,
     return disc_reward
     end
 
-function bernoulli_val_better_rollout(ep, T_remainder, curr_t, rollout_length, context, use_context, lambda_param, context_dim, context_mean,
+function mcmc_bernoulli_val_better_rollout(ep, T_remainder, curr_t, rollout_length, context, use_context, lambda_param, context_dim, context_mean,
     context_sd, obs_sd, bandit_count, discount, bandit_posterior_covs, bandit_posterior_means, bandit_param,
 	true_expected_rewards, CovCon, old_cov, SigInvMu)
 
@@ -1006,3 +1007,154 @@ function bernoulli_val_better_rollout(ep, T_remainder, curr_t, rollout_length, c
     return disc_reward
 
 end
+
+
+
+# Greedy
+function mcmc_greedy_policy(ep, t, T, bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+    
+    bandit_expected_rewards = zeros(bandit_count)
+    for k in 1:bandit_count
+        samp = sample_mcmc(X[A .== k,:], y[A .== k], prior_mean, prior_cov, proposal_sd, 1000, 100)
+        bandit_expected_rewards[k] = mean(samp * context)
+    end
+    
+    val, action = findmax(bandit_expected_rewards)
+    return action
+end
+
+# Epsilon Greedy
+function mcmc_epsilon_greedy_policy(ep, t, T, bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+
+    epsilon_draw = rand()
+    
+    if decreasing
+        thresh = epsilon / t
+    else
+        thresh = epsilon
+    end
+
+    if epsilon_draw < thresh
+        return rand(1:bandit_count)
+    else
+        val, action = findmax(bandit_posterior_means * context)
+        return(action)
+    end
+
+end
+
+# Bayes UCB
+function mcmc_bayes_ucb_policy(ep, t, T, bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+    val, action = findmax(bandit_posterior_means * context)
+    reward_means = bandit_posterior_means * context
+    reward_sds = sqrt.(vec([context' * (@view bandit_posterior_covs[i,:,:]) * context for i=1:bandit_count]))
+    ucbs = quantile.(Normal.(reward_means, reward_sds), 1-1/t)
+    return findmax(ucbs)[2]
+end
+
+# Bayes UCB
+function mcmc_glm_ucb_policy(ep, t, T, bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+    #val, action = findmax(bandit_posterior_means * context)
+    reward_means = zeros(bandit_count)
+    reward_sds = zeros(bandit_count)
+    for k in 1:bandit_count
+        samp = sample_mcmc(X[A .== k,:], y[A .== k], prior_mean, prior_cov, proposal_sd, 1000, 100)
+        samp_means = samp * context
+        reward_means[k] = mean(samp_means)
+        reward_sds[k] = sqrt(var(samp_means))
+    end
+    ucbs = reward_means .+ max(1,sqrt(log(t))) .* reward_sds
+    return findmax(ucbs)[2]
+end
+
+# Thompson
+function mcmc_thompson_policy(ep, t, T, bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+    thompson_means = zeros(bandit_count)
+    for k in 1:bandit_count
+        samp = sample_mcmc(X[A .== k,:], y[A .== k], prior_mean, prior_cov, proposal_sd, 1, 100)
+        thompson_means[k] = dot(samp, context)
+    end
+
+
+    return findmax(thompson_means)[2]
+end
+
+
+
+
+## IDS POLICY
+
+function mcmc_ids_expected_regrets(context, draws, niter)
+
+    reward_draws = zeros(bandit_count, niter)
+    
+    for b in 1:bandit_count
+        for i in 1:niter
+            reward_draws[b, i] = dot(context, draws[b, i, :])
+        end
+    end
+    
+    mean_rewards = dropdims(mean(reward_draws, dims = 2), dims = 2)
+
+    mean_max_reward = 0
+    for i in 1:niter
+        mean_max_reward += findmax(reward_draws[:, i])[1] / niter
+    end
+    
+    res = max.(0, mean_max_reward .- mean_rewards)
+
+    return res
+end
+
+
+
+function mcmc_ids_information_ratio(bandit_posterior_covs, context, action, regrets)
+    gain = ids_expected_entropy_gain(bandit_posterior_covs[action, :, :], context)
+    return -1*regrets[action]^2 / gain
+end
+
+
+
+# IDS
+function mcmc_ids_policy(ep, t, T, bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+    n_burn = 100
+    n_samp = 1000
+    SAMP = zeros(bandit_count, n_samp, context_dim)
+    ENTDIFFS = zeros(bandit_count)
+    for k in 1:bandit_count
+        samp = sample_mcmc(X[A .== k,:], y[A .== k], prior_mean, prior_cov, proposal_sd, 1000, 100)
+        SAMP[k, :, :] = samp
+        erls = samp * context
+        probs = exp.(erls) ./ (1 .+ exp.(erls))
+        obs = 1 .* (rand(n_samp) .< probs)
+        fraction1 = length(obs[obs .== 1]) / n_samp
+        cov_prior = cov(samp)
+
+        rat1 = n_samp / sum(probs)
+        mean1 = mean(samp .* probs, dims = 1) .* rat1
+        
+        samp_norm1 = samp .* sqrt.(probs)
+        mean_norm1 = mean(samp_norm1, dims = 1)
+        cov1 = (cov(samp_norm1) .+ (mean_norm1' * mean_norm1)) .* rat1 .- (mean1' * mean1)
+        
+        rat2 = n_samp / sum(1 .- probs)
+        mean2 = mean(samp .* (1 .- probs), dims = 1) .* rat2
+        
+        samp_norm2 = samp .* sqrt.(1 .- probs)
+        mean_norm2 = mean(samp_norm2, dims = 1)
+        cov2 = (cov(samp_norm2) .+ (mean_norm2' * mean_norm2)) .* rat2 .- (mean2' * mean2)
+
+        entdiff1 = .5 * log(det(cholesky(cov1) \ cov_prior))
+        entdiff2 = .5 * log(det(cholesky(cov2) \ cov_prior))
+        entdiff = fraction1 * entdiff1  + (1 - fraction1) * entdiff2
+        ENTDIFFS[k] = entdiff
+    
+    end
+
+    regs = mcmc_ids_expected_regrets(context, SAMP, n_samp)
+    
+    return findmax(-1 .* regs .^ 2 ./ ENTDIFFS)[2]
+end
+
+
+

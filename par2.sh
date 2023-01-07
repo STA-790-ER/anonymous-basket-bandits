@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH -J jlcb1
-#SBATCH --array 1-10000
+#SBATCH --array 1-1000
 #SBATCH --cpus-per-task 1
-#SBATCH --output="/hpc/home/jml165/slurmout/R-%A_%a.out"
-#SBATCH --error="/hpc/home/jml165/slurmout/R-%A_%a.err"
+#SBATCH --output="/hpc/home/jml165/slurmout2/R-%A_%a.out"
+#SBATCH --error="/hpc/home/jml165/slurmout2/R-%A_%a.err"
 #SBATCH --mem=1500M
 #SBATCH --partition=scavenger
 #SBATCH --mail-type=END,FAIL
@@ -13,4 +13,4 @@
 module purge
 module load Julia/1.6.1
 
-julia -t 1 ~/rl/lawson-bandits/main.jl
+julia -t 1 ~/rl/lawson-bandits/main2.jl
