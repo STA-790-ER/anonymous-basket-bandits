@@ -13,6 +13,8 @@ include("opt_alloc.jl")
 include("coordinated_utilities.jl")
 include("glm.jl")
 include("mcmc.jl")
+include("vb.jl")
+include("gp.jl")
 #cnst mts = MersenneTwister.(1:Threads.nthreads())
 # Parameters
 const context_dim = 2
@@ -24,6 +26,8 @@ const bandit_count = 3
 const bandit_prior_mean = 0
 const bandit_prior_sd = 10
 
+
+# MCMC parameters
 prior_mean = repeat([bandit_prior_mean], context_dim)
 prior_cov = diagm(repeat([bandit_prior_sd^2], context_dim))
 const proposal_sd = .1
@@ -32,24 +36,24 @@ const proposal_sd = .1
 const multi_count = 10
 
 # SIMULATION HORIZON
-const T = 100
+const T = 20
 
 # NUMBER OF GLOBAL SIMULATION EPISODES (PER INDEX JOB)
 const n_episodes = 1
 
 # DISCOUNT PARAMETER
-const discount = 1.
+const discount = .9
 
 # PARAMETER FOR EPSILON GREEDY POLICY
 const epsilon = .4
 const decreasing = true
 # PARAMETERS FOR ALL ROLLOUT METHODS
 const rollout_length = 10 # 20
-const n_rollouts = 10000 # 100000
+const n_rollouts = 20000 # 100000
 
 # PARAMETERS FOR SPSA OPTIMIZATION METHOD
 const n_opt_rollouts = 10000 # 100000
-const n_spsa_iter = 300
+const n_spsa_iter = 10000
 
 
 
@@ -74,6 +78,14 @@ grid_margin_3 = [1., 2.]
 const delta = .95
 
 
+### GP PARAMETERS
+
+const kernel_scale = 1
+const kernel_bandwidth = 1
+
+### MAB PARAMETERS
+const a_beta = 1
+const b_beta = 1
 
 
 ## SIMULATOR FUNCTION
@@ -1964,12 +1976,14 @@ const discount_vector = discount .^ collect(0:(T-1))
 #const multi_ind = [false for i in 1:18]
 #const bern_ind = [true, false, true, false, true, false, true, false, true, false, false, false, false, false, true, true, true, true]
 
-const run_policies = [mcmc_greedy_policy, mcmc_thompson_policy, mcmc_glm_ucb_policy, mcmc_ids_policy, mcmc_bernoulli_val_greedy_thompson_policy]
+const run_policies = [gp_greedy_policy, gp_thompson_policy, gp_glm_ucb_policy, gp_ids_policy, gp_val_greedy_thompson_ucb_ids_policy]
 #const run_policies = [greedy_policy, thompson_policy, bayes_ucb_policy, ids_policy]
 const multi_ind = [false, false, false, false, false]
 const bern_ind = [false, false, false, false, false]
 const dlm_ind = [false, false, false, false, false]
-const mcmc_bern_ind = [true, true, true, true, true]
+const mcmc_bern_ind = [false, false, false, false, false]
+const vb_bern_ind = [false, false, false, false, false]
+const gp_ind = [true, true, true, true, true]
 
 const coord_epsilon_greedy = false
 const coord_thompson = false
@@ -2003,6 +2017,13 @@ for pol in 1:length(run_policies)
     elseif mcmc_bern_ind[pol]
         pol_rewards, pol_opt_rewards = mcmc_bernoulli_contextual_bandit_simulator(run_policies[pol], T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean, context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
         push!(regret_header, "$(run_policies[pol])_mcmc_bern")
+    
+    elseif vb_bern_ind[pol]
+        pol_rewards, pol_opt_rewards = vb_bernoulli_contextual_bandit_simulator(run_policies[pol], T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean, context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
+        push!(regret_header, "$(run_policies[pol])_vb_bern")
+    elseif gp_ind[pol]
+        pol_rewards, pol_opt_rewards = gp_contextual_bandit_simulator(run_policies[pol], T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean, context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
+        push!(regret_header, "$(run_policies[pol])")
 
     
     else

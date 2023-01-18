@@ -2716,14 +2716,15 @@ end
 
 function ids_expected_regrets(context, bandit_posterior_means, bandit_posterior_covs, niter)
 
-    draws = zeros(bandit_count, context_dim, niter)
+    #draws = zeros(bandit_count, context_dim, niter)
     reward_draws = zeros(bandit_count, niter)
     
     for b in 1:bandit_count
-        draws[b, :, :] = rand(MvNormal(bandit_posterior_means[b, :], bandit_posterior_covs[b, :, :]), niter)
-        for i in 1:niter
-            reward_draws[b, i] = dot(context, draws[b, :, i])
-        end
+        #draws[b, :, :] = rand(MvNormal(bandit_posterior_means[b, :], bandit_posterior_covs[b, :, :]), niter)
+        #for i in 1:niter
+        #    reward_draws[b, i] = dot(context, draws[b, :, i])
+        #end
+        reward_draws[b, :] = dot(context, bandit_posterior_means[b, :]) .+ sqrt(dot(context, bandit_posterior_covs[b, :, :], context)) .* randn(niter)
     end
     
     mean_rewards = dropdims(mean(reward_draws, dims = 2), dims = 2)

@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -J jlcb1
-#SBATCH --array 1-1000
+#SBATCH --array 1-500
 #SBATCH --cpus-per-task 1
 #SBATCH --output="/hpc/home/jml165/slurmout2/R-%A_%a.out"
 #SBATCH --error="/hpc/home/jml165/slurmout2/R-%A_%a.err"
