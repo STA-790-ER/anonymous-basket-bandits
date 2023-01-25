@@ -94,7 +94,7 @@ function bernoulli_ep_contextual_bandit_simulator(ep,action_function, T, rollout
         end
         
         for t in 1:T
-            context = randn(context_dim) * context_sd .+ context_mean
+            context = generate_context(context_dim, context_mean, context_sd, context_constant)
             true_expected_rewards_logit = true_bandit_param * context
             true_expected_rewards = exp.(true_expected_rewards_logit) ./ (1 .+ exp.(true_expected_rewards_logit))
             #true_expected_rewards = bandit_posterior_means * context
@@ -719,7 +719,7 @@ function bernoulli_greedy_rollout(ep, T_remainder, rollout_length, lambda, conte
         #context[context_seed] = 1
 
 
-        context = randn(context_dim) * context_sd .+ context_mean
+        context = generate_context(context_dim, context_mean, context_sd, context_constant)
         mul!(true_expected_rewards, bandit_param, context)
 
 
@@ -777,7 +777,7 @@ function bernoulli_val_greedy_rollout(ep, T_remainder, rollout_length, lambda, c
         mul!(true_expected_rewards, bandit_param, context)
 
 
-        context = randn(context_dim) * context_sd .+ context_mean
+        context = generate_context(context_dim, context_mean, context_sd, context_constant)
 
 
 
@@ -865,7 +865,7 @@ function bernoulli_val_rollout(ep, policy, T_remainder, rollout_length, context,
         #mul!(true_expected_rewards, bandit_param, context)
 
         if t > 1 || !use_context
-            context = randn(context_dim) * context_sd .+ context_mean
+            context = generate_context(context_dim, context_mean, context_sd, context_constant)
         end
 
         action = policy(ep, t, min(T_remainder, rollout_length), bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
@@ -942,7 +942,7 @@ function bernoulli_val_better_rollout(ep, T_remainder, curr_t, rollout_length, c
 
 
         if (t > 1) || !use_context
-            context = randn(context_dim) * context_sd .+ context_mean
+            context = generate_context(context_dim, context_mean, context_sd, context_constant)
         end
         mul!(true_expected_rewards, bandit_param, context)
         #context = randn(context_dim) * context_sd .+ context_mean

@@ -15,14 +15,17 @@ include("glm.jl")
 include("mcmc.jl")
 include("vb.jl")
 include("gp.jl")
+include("mab.jl")
 #cnst mts = MersenneTwister.(1:Threads.nthreads())
 # Parameters
-const context_dim = 2
+const context_dim = 5
 const context_mean = 0
 const context_sd = 1 
-const obs_sd = 1
+# set to false for gp
+const context_constant = true
+const obs_sd = 5
 
-const bandit_count = 3
+const bandit_count = 10
 const bandit_prior_mean = 0
 const bandit_prior_sd = 10
 
@@ -31,28 +34,30 @@ const bandit_prior_sd = 10
 prior_mean = repeat([bandit_prior_mean], context_dim)
 prior_cov = diagm(repeat([bandit_prior_sd^2], context_dim))
 const proposal_sd = .1
+const n_burn = 200
+const n_dup = 10
 
 # Multi Action
 const multi_count = 10
 
 # SIMULATION HORIZON
-const T = 20
+const T = 100
 
 # NUMBER OF GLOBAL SIMULATION EPISODES (PER INDEX JOB)
-const n_episodes = 1
+const n_episodes = 2
 
 # DISCOUNT PARAMETER
-const discount = .9
+const discount = 1.
 
 # PARAMETER FOR EPSILON GREEDY POLICY
 const epsilon = .4
 const decreasing = true
 # PARAMETERS FOR ALL ROLLOUT METHODS
-const rollout_length = 10 # 20
+const rollout_length = 50# 20
 const n_rollouts = 20000 # 100000
 
 # PARAMETERS FOR SPSA OPTIMIZATION METHOD
-const n_opt_rollouts = 10000 # 100000
+const n_opt_rollouts = 20000 # 100000
 const n_spsa_iter = 10000
 
 
@@ -75,17 +80,28 @@ grid_margin_3 = [1., 2.]
 
 ### NON STATIONARY PARAMETERS
 
-const delta = .95
+const delta = 1.
 
 
 ### GP PARAMETERS
 
-const kernel_scale = 1
-const kernel_bandwidth = 1
+const kernel_scale = 10
+const kernel_bandwidth = 10
 
 ### MAB PARAMETERS
-const a_beta = 1
-const b_beta = 1
+const a_beta_prior = .5
+const b_beta_prior = .5
+
+### VB PARAMETER
+
+const vb_rollout_mult = 5
+const vb_rollout_tol = .00001
+const vb_policy_tol = .01
+
+### ADAPTIVE PARAM
+
+const expected_regret_thresh = .0005
+const action_expected_regret_thresh = .00001
 
 
 ## SIMULATOR FUNCTION
@@ -142,7 +158,13 @@ upper_triangular_vec = function(M)
         return output
 end
 
-
+function generate_context(context_dim, context_mean, context_sd, context_constant)
+    if context_constant
+        return [1; context_mean .+ context_sd .* randn(context_dim - 1)]
+    else
+        return context_mean .+ context_sd .* randn(context_dim)
+    end
+end
 function ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
     context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon, global_bandit_param)
         
@@ -159,7 +181,7 @@ function ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n
             bandit_posterior_covs[i, :, :] = Diagonal(repeat([bandit_prior_sd^2], context_dim))
         end
         for t in 1:T
-            context = randn(context_dim) * context_sd .+ context_mean
+            context = generate_context(context_dim, context_mean, context_sd, context_constant)
             true_expected_rewards = true_bandit_param * context
             #true_expected_rewards = bandit_posterior_means * context
             action = action_function(ep, t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
@@ -235,7 +257,7 @@ function multi_ep_contextual_bandit_simulator(ep,action_function, T, rollout_len
 
             for m in 1:multi_count
 
-                context = randn(context_dim) * context_sd .+ context_mean
+                context = generate_context(context_dim, context_mean, context_sd, context_constant)
                 contexts[m, :] = context
                 true_expected_rewards = true_bandit_param * context
                 #true_expected_rewards = bandit_posterior_means * context
@@ -306,7 +328,7 @@ function coord_greedy_ep_contextual_bandit_simulator(ep, T, rollout_length, n_ep
             
             for m in 1:multi_count
 
-                context = randn(context_dim) * context_sd .+ context_mean
+                context = generate_context(context_dim, context_mean, context_sd, context_constant)
                 contexts[m, :] = context
                 #true_expected_rewards = true_bandit_param * context
                 posterior_expected_rewards = bandit_posterior_means * context
@@ -453,7 +475,7 @@ function approx_coord_greedy_ep_contextual_bandit_simulator(ep, T, rollout_lengt
             end
             for m in 1:multi_count
 
-                context = randn(context_dim) * context_sd .+ context_mean
+                context = generate_context(context_dim, context_mean, context_sd, context_constant)
                 contexts[m, :] = context
                 #true_expected_rewards = true_bandit_param * context
                 posterior_expected_rewards = bandit_posterior_means * context
@@ -594,7 +616,7 @@ function coord_thompson_ep_contextual_bandit_simulator(ep, T, rollout_length, n_
             
             
             for m in 1:multi_count
-                context = randn(context_dim) * context_sd .+ context_mean
+                context = generate_context(context_dim, context_mean, context_sd, context_constant)
                 contexts[m, :] = context
             end
             # coordinated action selection
@@ -695,7 +717,7 @@ function coord_thompson_2_ep_contextual_bandit_simulator(ep, T, rollout_length, 
             
             
             for m in 1:multi_count
-                context = randn(context_dim) * context_sd .+ context_mean
+                context = generate_context(context_dim, context_mean, context_sd, context_constant)
                 contexts[m, :] = context
             end
             # coordinated action selection
@@ -771,7 +793,7 @@ function coord_thompson_3_ep_contextual_bandit_simulator(ep, T, rollout_length, 
             
             
             for m in 1:multi_count
-                context = randn(context_dim) * context_sd .+ context_mean
+                context = generate_context(context_dim, context_mean, context_sd, context_constant)
                 contexts[m, :] = context
             end
             # coordinated action selection
@@ -1048,7 +1070,7 @@ function coord_ids_ep_contextual_bandit_simulator(ep, T, rollout_length, n_episo
             remains = []
             actions = convert(Vector{Int64}, zeros(multi_count))
             for m in 1:multi_count
-                context = randn(context_dim) * context_sd .+ context_mean
+                context = generate_context(context_dim, context_mean, context_sd, context_constant)
                 contexts[m, :] = context
             end
 
@@ -1166,7 +1188,7 @@ function coord_dual_thompson_ep_contextual_bandit_simulator(ep, T, rollout_lengt
             
             
             for m in 1:multi_count
-                context = randn(context_dim) * context_sd .+ context_mean
+                context = generate_context(context_dim, context_mean, context_sd, context_constant)
                 contexts[m, :] = context
             end
             # coordinated action selection
@@ -1291,7 +1313,7 @@ function coord_thompson_ids_ep_contextual_bandit_simulator(ep, T, rollout_length
             
             
             for m in 1:multi_count
-                context = randn(context_dim) * context_sd .+ context_mean
+                context = generate_context(context_dim, context_mean, context_sd, context_constant)
                 contexts[m, :] = context
             end
             # coordinated action selection
@@ -1432,7 +1454,7 @@ function coord_thompson_ids_2_ep_contextual_bandit_simulator(ep, T, rollout_leng
             
             
             for m in 1:multi_count
-                context = randn(context_dim) * context_sd .+ context_mean
+                context = generate_context(context_dim, context_mean, context_sd, context_constant)
                 contexts[m, :] = context
             end
             # coordinated action selection
@@ -1566,7 +1588,7 @@ function val_thompson_ids_rollout(thompson_count, T_remainder, rollout_length, c
         if t > 1 || !use_context
 
             for m in 1:multi_count
-                context = randn(context_dim) * context_sd .+ context_mean
+                context = generate_context(context_dim, context_mean, context_sd, context_constant)
                 contexts[m, :] = context
             end
 
@@ -1790,7 +1812,7 @@ function coord_multi_ep_contextual_bandit_simulator(ep,action_function, T, rollo
         for t in 1:T
             
             for m in 1:multi_count
-                context = randn(context_dim) * context_sd .+ context_mean
+                context = generate_context(context_dim, context_mean, context_sd, context_constant)
                 contexts[m, :] = context
             end
             actions = action_function(t, T, bandit_count, contexts, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
@@ -1883,7 +1905,7 @@ function dlm_ep_contextual_bandit_simulator(ep,action_function, T, rollout_lengt
             bandit_posterior_covs[i, :, :] = Diagonal(repeat([bandit_prior_sd^2], context_dim))
         end
         for t in 1:T
-            context = randn(context_dim) * context_sd .+ context_mean
+            context = generate_context(context_dim, context_mean, context_sd, context_constant)
             true_expected_rewards = true_bandit_param * context
             #true_expected_rewards = bandit_posterior_means * context
             action = action_function(ep, t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
@@ -1976,14 +1998,16 @@ const discount_vector = discount .^ collect(0:(T-1))
 #const multi_ind = [false for i in 1:18]
 #const bern_ind = [true, false, true, false, true, false, true, false, true, false, false, false, false, false, true, true, true, true]
 
-const run_policies = [gp_greedy_policy, gp_thompson_policy, gp_glm_ucb_policy, gp_ids_policy, gp_val_greedy_thompson_ucb_ids_policy]
+const run_policies = [greedy_policy, thompson_policy, bayes_ucb_policy, ids_policy, val_greedy_thompson_ucb_ids_policy, mab_greedy_policy, mab_thompson_policy, mab_bayes_ucb_policy, mab_ids_policy, mab_val_greedy_thompson_ucb_ids_policy]
+#const run_policies = [gp_greedy_policy, gp_thompson_policy, gp_glm_ucb_policy, gp_ids_policy, gp_ids_4_policy, gp_val_greedy_thompson_ucb_ids_policy]
 #const run_policies = [greedy_policy, thompson_policy, bayes_ucb_policy, ids_policy]
-const multi_ind = [false, false, false, false, false]
-const bern_ind = [false, false, false, false, false]
-const dlm_ind = [false, false, false, false, false]
-const mcmc_bern_ind = [false, false, false, false, false]
-const vb_bern_ind = [false, false, false, false, false]
-const gp_ind = [true, true, true, true, true]
+const multi_ind = repeat([false], 10)
+const bern_ind = repeat([false], 10)
+const dlm_ind = repeat([false], 10)
+const mcmc_bern_ind = repeat([false], 10)
+const vb_bern_ind = repeat([false], 10)
+const gp_ind = repeat([false], 10)
+const mab_ind = vcat(repeat([false], 5), repeat([true], 5))
 
 const coord_epsilon_greedy = false
 const coord_thompson = false
@@ -2024,8 +2048,9 @@ for pol in 1:length(run_policies)
     elseif gp_ind[pol]
         pol_rewards, pol_opt_rewards = gp_contextual_bandit_simulator(run_policies[pol], T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean, context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
         push!(regret_header, "$(run_policies[pol])")
-
-    
+    elseif mab_ind[pol]
+        pol_rewards, pol_opt_rewards = multi_armed_bandit_simulator(run_policies[pol], T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, bandit_count, a_beta_prior, b_beta_prior, discount, epsilon)
+        push!(regret_header, "$(run_policies[pol])")
     else
         pol_rewards, pol_opt_rewards = contextual_bandit_simulator(run_policies[pol], T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
                                             context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)

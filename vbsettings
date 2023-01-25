@@ -1,0 +1,85 @@
+
+const context_dim = 5
+const context_mean = 0
+const context_sd = .1
+const context_constant = true
+const obs_sd = 2
+
+const bandit_count = 5
+const bandit_prior_mean = 0
+const bandit_prior_sd = 1
+
+
+# MCMC parameters
+prior_mean = repeat([bandit_prior_mean], context_dim)
+prior_cov = diagm(repeat([bandit_prior_sd^2], context_dim))
+const proposal_sd = .1
+const n_burn = 200
+const n_dup = 5
+
+# Multi Action
+const multi_count = 10
+
+# SIMULATION HORIZON
+const T = 100
+
+# NUMBER OF GLOBAL SIMULATION EPISODES (PER INDEX JOB)
+const n_episodes = 1
+
+# DISCOUNT PARAMETER
+const discount = 1.
+
+# PARAMETER FOR EPSILON GREEDY POLICY
+const epsilon = .4
+const decreasing = true
+# PARAMETERS FOR ALL ROLLOUT METHODS
+const rollout_length = 50 # 20
+const n_rollouts = 20000 # 100000
+
+# PARAMETERS FOR SPSA OPTIMIZATION METHOD
+const n_opt_rollouts = 20000 # 100000
+const n_spsa_iter = 10000
+
+
+
+## PARAMETERS FOR GRID OPTIMIZATION METHOD
+const n_grid_iter = 7
+const grid_ratio = 2
+const grid_num = 6
+const int_length = 2
+const n_grid_rollouts = 50
+
+### NON ADAPTIVE GRID (n_opt_rollouts used for opt rollouts)
+#grid_margin_1 = [0, .5, 1, 2, 4]
+#grid_margin_2 = [0, .5, 1, 2]
+#grid_margin_3 = [.5, 1, 2]
+
+grid_margin_1 = [0., 1.]
+grid_margin_2 = [0., 1.]
+grid_margin_3 = [1., 2.]
+
+### NON STATIONARY PARAMETERS
+
+const delta = .98
+
+
+### GP PARAMETERS
+
+const kernel_scale = 1
+const kernel_bandwidth = 1
+
+### MAB PARAMETERS
+const a_beta = 1
+const b_beta = 1
+
+### VB PARAMETER
+
+const vb_rollout_mult = 1
+const vb_rollout_tol = .00001
+const vb_policy_tol = .01
+
+### ADAPTIVE PARAM
+
+const expected_regret_thresh = .0005
+const action_expected_regret_thresh = .00001
+

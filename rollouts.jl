@@ -19,7 +19,7 @@ function lambda_rollout(T, rollout_length, context, use_context, lambda, context
         #context[context_seed] = 1
 
         if (t > 1) || !use_context
-            context = randn(context_dim) * context_sd .+ context_mean
+            context = generate_context(context_dim, context_mean, context_sd, context_constant)
         end
 
         mul!(true_expected_rewards, bandit_param, context)
@@ -95,7 +95,7 @@ function lambda_mean_rollout(T_remainder, rollout_length, context, use_context, 
 
 
         if (t > 1) || !use_context
-            context = randn(context_dim) * context_sd .+ context_mean
+            context = generate_context(context_dim, context_mean, context_sd, context_constant)
         end
         mul!(true_expected_rewards, bandit_param, context)
         #context = randn(context_dim) * context_sd .+ context_mean
@@ -197,7 +197,7 @@ function greedy_rollout(T_remainder, rollout_length, lambda, context_dim, contex
         #context[context_seed] = 1
 
 
-        context = randn(context_dim) * context_sd .+ context_mean
+        context = generate_context(context_dim, context_mean, context_sd, context_constant)
         mul!(true_expected_rewards, bandit_param, context)
 
 
@@ -273,7 +273,7 @@ function val_greedy_rollout(T_remainder, rollout_length, lambda, context_dim, co
         mul!(true_expected_rewards, bandit_param, context)
 
 
-        context = randn(context_dim) * context_sd .+ context_mean
+        context = generate_context(context_dim, context_mean, context_sd, context_constant)
 
 
 
@@ -400,7 +400,7 @@ function val_epsilon_greedy_rollout(epsilon, T_remainder, rollout_length, contex
 
         if t > 1 || !use_context
 
-            context = randn(context_dim) * context_sd .+ context_mean
+            context = generate_context(context_dim, context_mean, context_sd, context_constant)
 
         end
 
@@ -532,7 +532,7 @@ function val_fractional_thompson_rollout(coarse, T_remainder, rollout_length, co
 
         if t > 1 || !use_context
 
-            context = randn(context_dim) * context_sd .+ context_mean
+            context = generate_context(context_dim, context_mean, context_sd, context_constant)
 
         end
 
@@ -650,7 +650,7 @@ function val_rollout(ep, policy, T_remainder, rollout_length, context, use_conte
     fill!(SigInvMu,0.0)
     
     truncation_length = T_remainder - min(T_remainder, rollout_length)
-
+    t_curr = T - T_remainder + 1
     for t in 1:min(T_remainder, rollout_length)
 
         #context_seed = rand(1:context_dim)
@@ -659,21 +659,21 @@ function val_rollout(ep, policy, T_remainder, rollout_length, context, use_conte
         #mul!(true_expected_rewards, bandit_param, context)
 
         if t > 1 || !use_context
-            context = randn(context_dim) * context_sd .+ context_mean
+            context = generate_context(context_dim, context_mean, context_sd, context_constant)
         end
 
         action = policy(ep, t, min(T_remainder, rollout_length), bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
 
 
-        # TRUE PARAM VERSION
-        #true_expected_reward = true_expected_rewards[action]
-        #disc_reward += true_expected_reward * discount^(t-1)
-        #obs = randn() * obs_sd + true_expected_reward
+        #TRUE PARAM VERSION
+        true_expected_reward = dot(bandit_param[action, :], context)
+        disc_reward += true_expected_reward * discount^(t-1)
+        obs = randn() * obs_sd + true_expected_reward
         
         # UNKNOWN PARAM VERSION
-        true_expected_reward = dot(bandit_posterior_means[action,:], context)
-        disc_reward += true_expected_reward * discount^(t-1)
-        obs = randn() * sqrt(obs_sd^2 + dot(context, bandit_posterior_covs[action,:,:], context)) + true_expected_reward
+        #true_expected_reward = dot(bandit_posterior_means[action,:], context)
+        #disc_reward += true_expected_reward * discount^(t-1)
+        #obs = randn() * sqrt(obs_sd^2 + dot(context, bandit_posterior_covs[action,:,:], context)) + true_expected_reward
         
         
         
@@ -727,27 +727,56 @@ function val_rollout(ep, policy, T_remainder, rollout_length, context, use_conte
 
     if truncation_length > 0
         
+        if true 
+            t_trunc = t_curr + min(T_remainder, rollout_length)
+            reg_est = 0
+            for n in 1:2
+                context = generate_context(context_dim, context_mean, context_sd, context_constant)
+                context_reg_est = 0
+                expected_rewards = [dot(context, bandit_posterior_means[k, :]) for k in 1:bandit_count]
+                variance_rewards = [dot(context, bandit_posterior_covs[k, :, :], context) for k in 1:bandit_count]
+                point_samps =  expected_rewards .+ sqrt.(variance_rewards) .* randn(bandit_count, 500)
+                if String(Symbol(policy)) == "thompson_policy"
+                    for m in 1:500
+                        action = policy(ep, t_trunc, min(T_remainder, rollout_length), bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+                        reg_est *= ((n-1)*500 + m - 1) / ((n-1)*500 + m)
+                        reg_est += (findmax(point_samps[:, m])[1] - point_samps[action, m]) / ((n-1)*500 + m)
+                    end
+                else
+                    action = policy(ep, t_trunc, min(T_remainder, rollout_length), bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+                    for m in 1:500
+                        reg_est *= ((n-1)*500 + m - 1) / ((n-1)*500 + m)
+                        reg_est += (findmax(point_samps[:, m])[1] - point_samps[action, m]) / ((n-1)*500 + m)
+                    end
+                end
+                #reg_est *= (n-1) / n
+                #reg_est += (findmax(point_samps)[1] - point_samps[action]) / n
+            end
+
+            disc_reward -= .9 * discount^min(T_remainder, rollout_length) * sum(discount^(t - t_trunc) * reg_est * (1 + T - t) / (1 + T - t_trunc) for t in t_trunc:T)
         
-        #### SWITCHED TO TRUE VALUE NEURAL NETWORK AS TEST
+        else
+            #### SWITCHED TO TRUE VALUE NEURAL NETWORK AS TEST
+            
+            #input_vec = Vector(vec(bandit_param'))
+            #append!(input_vec, Vector(vec(bandit_posterior_means')))
+            input_vec = Vector(vec(bandit_posterior_means'))
+            append!(input_vec, vcat([upper_triangular_vec(bandit_posterior_covs[a, :, :]) for a in 1:bandit_count]...))
+            
+            scaled_input_vec = (input_vec .- scale_list[truncation_length][1:end .!= 1, 1]) ./ scale_list[truncation_length][1:end .!= 1, 2] 
+            
+            disc_reward += (discount^min(T_remainder, rollout_length)) * (scale_list[truncation_length][1,2]*neural_net_list[truncation_length](scaled_input_vec)[1] + scale_list[truncation_length][1,1])
         
-        #input_vec = Vector(vec(bandit_param'))
-        #append!(input_vec, Vector(vec(bandit_posterior_means')))
-        input_vec = Vector(vec(bandit_posterior_means'))
-        append!(input_vec, vcat([upper_triangular_vec(bandit_posterior_covs[a, :, :]) for a in 1:bandit_count]...))
-        
-        scaled_input_vec = (input_vec .- scale_list[truncation_length][1:end .!= 1, 1]) ./ scale_list[truncation_length][1:end .!= 1, 2] 
-        
-        disc_reward += (discount^min(T_remainder, rollout_length)) * (scale_list[truncation_length][1,2]*neural_net_list[truncation_length](scaled_input_vec)[1] + scale_list[truncation_length][1,1])
-    
-        
-        # Evaluating parameters for sanity check
-        
-        #test_out = []
-        #append!(test_out, input_vec)
-        #append!(test_out, scaled_input_vec)
-        #append!(test_out, (scale_list[truncation_length][1,2]*neural_net_list[truncation_length](scaled_input_vec)[1] + scale_list[truncation_length][1,1]))
-        #append!(test_out, neural_net_list[truncation_length](scaled_input_vec)[1]) 
-        #print(test_out) 
+            
+            # Evaluating parameters for sanity check
+            
+            #test_out = []
+            #append!(test_out, input_vec)
+            #append!(test_out, scaled_input_vec)
+            #append!(test_out, (scale_list[truncation_length][1,2]*neural_net_list[truncation_length](scaled_input_vec)[1] + scale_list[truncation_length][1,1]))
+            #append!(test_out, neural_net_list[truncation_length](scaled_input_vec)[1]) 
+            #print(test_out) 
+        end
     end
 
     return disc_reward
@@ -775,7 +804,7 @@ function rollout(policy, T_remainder, rollout_length, context, use_context, lamb
         #mul!(true_expected_rewards, bandit_param, context)
 
         if t > 1 || !use_context
-            context = randn(context_dim) * context_sd .+ context_mean
+            context = generate_context(context_dim, context_mean, context_sd, context_constant)
         end
 
         action = policy(t, min(T_remainder, rollout_length), bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
@@ -891,7 +920,7 @@ function better_rollout(T, curr_t, rollout_length, context, use_context, lambda_
 
 
         if (t > 1) || !use_context
-            context = randn(context_dim) * context_sd .+ context_mean
+            context = generate_context(context_dim, context_mean, context_sd, context_constant)
         end
         mul!(true_expected_rewards, bandit_param, context)
         #context = randn(context_dim) * context_sd .+ context_mean
@@ -970,7 +999,7 @@ function val_better_rollout(T_remainder, curr_t, rollout_length, context, use_co
 
 
         if (t > 1) || !use_context
-            context = randn(context_dim) * context_sd .+ context_mean
+            context = generate_context(context_dim, context_mean, context_sd, context_constant)
         end
         mul!(true_expected_rewards, bandit_param, context)
         #context = randn(context_dim) * context_sd .+ context_mean

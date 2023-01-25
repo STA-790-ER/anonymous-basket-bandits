@@ -18,7 +18,7 @@ file_mats = lapply(files, as.matrix)
 file_array = simplify2array(file_mats)
 
 file_means = apply(file_array, c(1,2), mean)
-file_vars = apply(file_array, c(1,2), function(x) var(x) / length(x))
+file_vars = apply(file_array, c(1,2), function(x) sqrt(var(x) / length(x)))
 
 
 #print(agree_array)
