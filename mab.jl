@@ -243,75 +243,6 @@ function mab_val_greedy_thompson_ucb_policy(ep, t, T, bandit_count, context, X, 
     return opt_act
 
 end
-function mab_val_greedy_thompson_ucb_ids_policy(ep, t, T, bandit_count, a_beta, b_beta, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts)
-
-    if t == 1
-        return rand(1:bandit_count)
-    end
-    #BANDIT_VALUES = zeros(bandit_count)
-    #predictive_rewards = bandit_posterior_means * context
-
-## PREALLOCATION
-    #roll_context = zeros(context_dim)
-    roll_true_expected_rewards = zeros(bandit_count)
-    #roll_CovCon = zeros(context_dim)
-    #roll_old_cov = zeros(context_dim, context_dim)
-    #roll_SigInvMu = zeros(context_dim)
-
-    #temp_post_means = zeros(bandit_count, context_dim)
-    #temp_post_covs = zeros(bandit_count, context_dim, context_dim)
-    #temp_bandit_mean = zeros(context_dim)
-    #temp_bandit_cov = zeros(context_dim, context_dim)
-
-    bandit_param = zeros(bandit_count, context_dim)
-    #true_expected_rewards = zeros(bandit_count)
-    #grad_est = zeros(3)
-
-    
-    policies = [mab_greedy_policy, mab_thompson_policy, mab_bayes_ucb_policy, mab_ids_policy]
-    policy_values = []
-    
-    action_samps = [pol(ep, t, T, bandit_count, a_beta, b_beta, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts) for pol in policies]
-    if length(unique(action_samps)) == 1
-        println("Agreement Action: ", action_samps[1])
-        flush(stdout)
-        return action_samps[1]
-    end
-
-    lambda = [0, 0]
-    bandit_param_samps = zeros(bandit_count, n_opt_rollouts)
-    for k in 1:bandit_count
-        bandit_param_samps[k, :] = rand(Beta(a_beta[k], b_beta[k]), n_opt_rollouts)
-    end
-
-    for policy in policies  
-            MEAN_REWARD = 0
-            for roll in 1:n_opt_rollouts
-                bandit_param = bandit_param_samps[:, roll] 
-                rollout_value = mab_val_rollout(ep, policy, T-t+1, rollout_length, bandit_count, discount, a_beta, b_beta, bandit_param)
-                MEAN_REWARD = ((roll - 1) * MEAN_REWARD + rollout_value) / roll
-            end
-            push!(policy_values, MEAN_REWARD)
-    end
-    
-
-    opt_index = findmax(policy_values)[2]
-    opt_policy = policies[opt_index]
-
-    println("GREEDY: ", policy_values[1],", THOMPSON: ", policy_values[2])
-    flush(stdout)
-
-    # END OPTIMIZATION OF LAMBDA
-
-    
-    opt_act = opt_policy(ep, t, T, bandit_count, a_beta, b_beta, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts)
-
-    println("Optimal Action: ",opt_act)
-    flush(stdout)
-
-    return opt_act
-
-end
 function mab_val_greedy_thompson_ucb_ids_q_policy(ep, t, T, bandit_count, a_beta, b_beta, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts)
 
     if t == 1
@@ -435,6 +366,176 @@ function mab_val_greedy_thompson_ucb_ids_q_policy(ep, t, T, bandit_count, a_beta
                 a_beta_rollout[k] = a_beta[k]
                 b_beta_rollout[k] = b_beta[k]
             end
+        end
+        if roll % 100 == 0
+            continue_inds = findall(halt_vec .== false)
+            action_means = [mean(REWARD_SAMPS[1:roll, p]) for p in continue_inds]
+            action_stds = [std(REWARD_SAMPS[1:roll, p]) / sqrt(roll) for p in continue_inds]
+            max_mean, max_ind = findmax(action_means)
+            diff_means = max_mean .- action_means
+            diff_stds = sqrt.(action_stds[max_ind]^2 .+ action_stds.^2)
+            action_expected_regret_proportions = (diff_means .* cdf.(Normal(), -diff_means ./ diff_stds) .- diff_stds .* pdf.(Normal(), -diff_means ./ diff_stds)) ./ max_mean
+            halt_vec[continue_inds] = (abs.(action_expected_regret_proportions) .< action_expected_regret_thresh)
+            halt_vec[continue_inds[max_ind]] = false
+            if (sum(halt_vec .== false) == 1)
+                break
+            end
+        end
+    end
+
+    continue_inds = findall(halt_vec .== false)
+    
+    action_means = [mean(REWARD_SAMPS[1:rollout_counts[p], p]) for p in 1:bandit_count]
+    action_stds = [std(REWARD_SAMPS[1:rollout_counts[p], p]) / sqrt(rollout_counts[p]) for p in 1:bandit_count]
+
+    opt_action_index = continue_inds[findmax(action_means[continue_inds])[2]]
+    opt_action_mean = action_means[opt_action_index]
+    opt_action_std = action_stds[opt_action_index]
+    println("ACTION VALUES: ", action_means)
+    println("ACTION STDS: ", action_stds)
+    println("OPT VALUE: ", opt_action_mean)
+    println("OPT ACTION: ", opt_action_index)
+    println("ACTION ITERS: ", rollout_counts)
+    flush(stdout)
+
+    return opt_action_index
+
+end
+function mab_val_greedy_thompson_ucb_ids_policy(ep, t, T, bandit_count, a_beta, b_beta, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts)
+
+    if t == 1
+        return rand(1:bandit_count)
+    end
+    roll_true_expected_rewards = zeros(bandit_count)
+
+    bandit_param = zeros(bandit_count, context_dim)
+
+    
+    policies = [mab_greedy_policy, mab_thompson_policy, mab_bayes_ucb_policy, mab_ids_policy]
+    policy_values = []
+    
+    action_samps = [pol(ep, t, T, bandit_count, a_beta, b_beta, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts) for pol in policies]
+    if length(unique(action_samps)) == 1
+        println("Agreement Action: ", action_samps[1])
+        flush(stdout)
+        return action_samps[1]
+    end
+
+    lambda = [0, 0]
+    bandit_param_samps = zeros(bandit_count, n_opt_rollouts)
+    for k in 1:bandit_count
+        bandit_param_samps[k, :] = rand(Beta(a_beta[k], b_beta[k]), n_opt_rollouts)
+    end
+    policy_count = length(policies)
+    a_beta_rollout = copy(a_beta)
+    b_beta_rollout = copy(b_beta)
+
+    
+    REWARD_SAMPS = zeros(n_opt_rollouts, length(policies))
+    halt_vec = repeat([false], length(policies))
+    rollout_counts = repeat([0], length(policies))
+    same_break = false
+    for roll in 1:n_opt_rollouts  
+
+            MEAN_REWARD = 0
+
+            for pol_ind in 1:policy_count
+                
+                if halt_vec[pol_ind]
+                    continue
+                end
+
+                rollout_counts[pol_ind] += 1
+                bandit_param = bandit_param_samps[:, roll]    
+                
+                rollout_value = mab_val_rollout(ep, policies[pol_ind], T-t+1, rollout_length, bandit_count, discount, a_beta_rollout, b_beta_rollout, bandit_param)
+                
+                
+                REWARD_SAMPS[roll, pol_ind] = rollout_value
+                
+                for k in 1:bandit_count
+                    a_beta_rollout[k] = a_beta[k]
+                    b_beta_rollout[k] = b_beta[k]
+                end
+            end
+        
+            if roll % 100 == 0
+                continue_inds = findall(halt_vec .== false)
+                policy_means = [mean(REWARD_SAMPS[1:roll, p]) for p in continue_inds]
+                policy_stds = [std(REWARD_SAMPS[1:roll, p] ./ sqrt(roll)) for p in continue_inds]
+                max_mean, max_ind = findmax(policy_means)
+                diff_means = max_mean .- policy_means
+                diff_stds = sqrt.(policy_stds[max_ind]^2 .+ policy_stds.^2)
+                pol_expected_regret_proportions = (diff_means .* cdf.(Normal(), -diff_means ./ diff_stds) .- diff_stds .* pdf.(Normal(), -diff_means ./ diff_stds)) ./ max_mean
+                halt_vec[continue_inds] = (abs.(pol_expected_regret_proportions) .< expected_regret_thresh)
+                halt_vec[continue_inds[max_ind]] = false
+                continue_inds = findall(halt_vec .== false)
+                if length(unique(action_samps[continue_inds])) == 1
+                    println("REMAINING POLICIES HAVE SAME ACTION")
+                    same_break = true
+                end
+            end
+            
+            if same_break
+                break
+            end
+
+            if sum(halt_vec .== false) == 1
+                break
+            end
+    end
+    
+    continue_inds = findall(halt_vec .== false)
+    
+    policy_means = [mean(REWARD_SAMPS[1:rollout_counts[p], p]) for p in 1:policy_count]
+    policy_stds = [std(REWARD_SAMPS[1:rollout_counts[p], p]) / sqrt(rollout_counts[p]) for p in 1:policy_count]
+
+    opt_index = continue_inds[findmax(policy_means[continue_inds])[2]]
+    opt_mean = policy_means[opt_index]
+    opt_std = policy_stds[opt_index]
+    println("POLICY VALUES: ", policy_means)
+    println("POLICY STDS: ", policy_stds)
+    println("OPT VALUE: ", opt_mean)
+    println("OPT POLICY: ", String(Symbol(policies[opt_index])))
+    println("POLICY ITERS: ", rollout_counts)
+    flush(stdout)
+
+    opt_policy = policies[opt_index]
+    return opt_policy(ep, t, T, bandit_count, a_beta, b_beta, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts) 
+
+    ACTION_MEAN_REWARDS = zeros(bandit_count)
+    ACTION_STD_REWARDS = zeros(bandit_count)
+    REWARD_SAMPS = zeros(n_opt_rollouts, bandit_count)
+    halt_vec = repeat([false], bandit_count)
+    rollout_counts = repeat([0], bandit_count)
+
+    a_beta_rollout = copy(a_beta)
+    b_beta_rollout = copy(b_beta)
+    for roll in 1:n_opt_rollouts
+        for action in 1:bandit_count 
+            
+            if halt_vec[action]
+                continue
+            end
+
+            rollout_counts[action] += 1
+
+            bandit_param = bandit_param_samps[:, roll]    
+            
+            obs = 1 * (bandit_param[action] > rand())
+            
+            a_beta_rollout[action] += obs
+            b_beta_rollout[action] += (1-obs)
+
+            
+            rollout_value = mab_val_rollout(ep, opt_policy, T-t, rollout_length-1, bandit_count, discount, a_beta_rollout, b_beta_rollout, bandit_param)
+            
+            REWARD_SAMPS[roll, action] = bandit_param[action] + discount * rollout_value 
+
+            for k in 1:bandit_count
+                a_beta_rollout[k] = a_beta[k]
+                b_beta_rollout[k] = b_beta[k]
+            end
             
             if roll % 100 == 0
                 continue_inds = findall(halt_vec .== false)
@@ -471,7 +572,7 @@ function mab_val_greedy_thompson_ucb_ids_q_policy(ep, t, T, bandit_count, a_beta
     return opt_action_index
 
 end
-function mab_val_greedy_thompson_ucb_ids_policy(ep, t, T, bandit_count, a_beta, b_beta, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts)
+function mab_ids_multi_policy(ep, t, T, bandit_count, a_beta, b_beta, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts)
 
     if t == 1
         return rand(1:bandit_count)
@@ -481,7 +582,7 @@ function mab_val_greedy_thompson_ucb_ids_policy(ep, t, T, bandit_count, a_beta, 
     bandit_param = zeros(bandit_count, context_dim)
 
     
-    policies = [mab_greedy_policy, mab_thompson_policy, mab_bayes_ucb_policy, mab_ids_policy]
+    policies = [mab_ids_policy, mab_ids_1_policy, mab_ids_1_5_policy, mab_ids_2_5_policy, mab_ids_3_policy]
     policy_values = []
     
     action_samps = [pol(ep, t, T, bandit_count, a_beta, b_beta, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts) for pol in policies]
@@ -806,6 +907,121 @@ function mab_ids_policy(ep, t, T, bandit_count, a_beta, b_beta, discount, epsilo
     mab_expected_regrets = mab_ids_expected_regrets(a_beta, b_beta, 1000)  
     return findmax(-1 .* mab_expected_regrets.^2 ./ ent_gains)[2]
 end
+function mab_ids_1_policy(ep, t, T, bandit_count, a_beta, b_beta, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts)
+    
+    ent_0 = beta_entropy.(a_beta, b_beta)
+    ent_gains = ent_0 .- (a_beta .* beta_entropy.(a_beta .+ 1, b_beta) .+ b_beta .* beta_entropy.(a_beta, b_beta .+ 1)) ./ (a_beta .+ b_beta)
+    
+    
+    mab_expected_regrets = mab_ids_expected_regrets(a_beta, b_beta, 1000)  
+    return findmax(-1 .* mab_expected_regrets ./ ent_gains)[2]
+end
+function mab_ids_4_policy(ep, t, T, bandit_count, a_beta, b_beta, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts)
+    
+    ent_0 = beta_entropy.(a_beta, b_beta)
+    ent_gains = ent_0 .- (a_beta .* beta_entropy.(a_beta .+ 1, b_beta) .+ b_beta .* beta_entropy.(a_beta, b_beta .+ 1)) ./ (a_beta .+ b_beta)
+    
+    
+    mab_expected_regrets = mab_ids_expected_regrets(a_beta, b_beta, 1000)  
+    return findmax(-1 .* mab_expected_regrets.^4 ./ ent_gains)[2]
+end
+function mab_ids_8_policy(ep, t, T, bandit_count, a_beta, b_beta, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts)
+    
+    ent_0 = beta_entropy.(a_beta, b_beta)
+    ent_gains = ent_0 .- (a_beta .* beta_entropy.(a_beta .+ 1, b_beta) .+ b_beta .* beta_entropy.(a_beta, b_beta .+ 1)) ./ (a_beta .+ b_beta)
+    
+    
+    mab_expected_regrets = mab_ids_expected_regrets(a_beta, b_beta, 1000)  
+    return findmax(-1 .* mab_expected_regrets.^8 ./ ent_gains)[2]
+end
+function mab_ids_1_5_policy(ep, t, T, bandit_count, a_beta, b_beta, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts)
+    
+    ent_0 = beta_entropy.(a_beta, b_beta)
+    ent_gains = ent_0 .- (a_beta .* beta_entropy.(a_beta .+ 1, b_beta) .+ b_beta .* beta_entropy.(a_beta, b_beta .+ 1)) ./ (a_beta .+ b_beta)
+    
+    
+    mab_expected_regrets = mab_ids_expected_regrets(a_beta, b_beta, 1000)  
+    return findmax(-1 .* mab_expected_regrets.^8 ./ ent_gains)[2]
+end
+function mab_ids_2_5_policy(ep, t, T, bandit_count, a_beta, b_beta, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts)
+    
+    ent_0 = beta_entropy.(a_beta, b_beta)
+    ent_gains = ent_0 .- (a_beta .* beta_entropy.(a_beta .+ 1, b_beta) .+ b_beta .* beta_entropy.(a_beta, b_beta .+ 1)) ./ (a_beta .+ b_beta)
+    
+    
+    mab_expected_regrets = mab_ids_expected_regrets(a_beta, b_beta, 1000)  
+    return findmax(-1 .* mab_expected_regrets.^8 ./ ent_gains)[2]
+end
+function mab_ids_3_policy(ep, t, T, bandit_count, a_beta, b_beta, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts)
+    
+    ent_0 = beta_entropy.(a_beta, b_beta)
+    ent_gains = ent_0 .- (a_beta .* beta_entropy.(a_beta .+ 1, b_beta) .+ b_beta .* beta_entropy.(a_beta, b_beta .+ 1)) ./ (a_beta .+ b_beta)
+    
+    
+    mab_expected_regrets = mab_ids_expected_regrets(a_beta, b_beta, 1000)  
+    return findmax(-1 .* mab_expected_regrets.^8 ./ ent_gains)[2]
+end
 
 
 
+function mab_get_action_probs(policy_list, ep, t, T, bandit_count, a_beta, b_beta, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts)
+    out = zeros(length(policy_list), bandit_count)
+    for i in eachindex(policy_list)
+        pol = policy_list[i]
+        if pol == mab_thompson_policy
+            for j in 1:1000
+                out[i, pol(ep, t, T, bandit_count, a_beta, b_beta, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts)] += 1
+            end
+            out[i, :] ./= 1000
+        else
+            out[i, pol(ep, t, T, bandit_count, a_beta, b_beta, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts)] += 1
+        end
+    end
+
+    return out
+end
+
+
+function ep_multi_armed_bandit_simulator(ep, action_function::exp4, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, bandit_count, a_beta, b_beta, discount, epsilon, global_bandit_param)
+        
+    
+    	#bandit_param = copy(global_bandit_param)
+        #true_bandit_param = copy(global_bandit_param)
+        EPREWARDS = zeros(T)
+	    EPOPTREWARDS = zeros(T)
+        
+
+        E_star_t = 0 
+        for t in 1:T
+
+            action_probs_matrix = mab_get_action_probs(action_function.policy_list, ep, t, T, bandit_count, a_beta, b_beta, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts)
+            action_probs = action_probs_matrix' * action_function.policy_probs
+            action = sample(1:bandit_count, Weights(action_probs))
+            
+            
+            
+            EPREWARDS[t] = global_bandit_param[action]
+            EPOPTREWARDS[t] = maximum(global_bandit_param)
+            #obs = randn() * sqrt(obs_sd^2 + dot(context, bandit_posterior_covs[action,:,:],context)) + true_expected_reward
+            obs = 1 * (global_bandit_param[action] > rand())
+            
+            # the order of the below matters for training covariance inverses computation!!!!
+            a_beta[action] += obs
+            b_beta[action] += (1-obs)
+
+            E_star_t += sum(maximum(action_probs_matrix, dims = 1))
+            eta = sqrt(log(length(action_function.policy_list)) / E_star_t)
+            gamma = eta / 2
+
+            ## UPDATE POLICY PROBS
+            obs_weighted = obs / (action_probs[action] + gamma)
+            policy_rewards = obs_weighted .* action_probs_matrix[:, action]
+
+            action_function.policy_probs .*= exp.(eta .* policy_rewards)
+            action_function.policy_probs ./= sum(action_function.policy_probs)
+	        println("Ep: ", ep, " - ", t, " of ", T, " for ", String(Symbol(action_function)))
+            flush(stdout)
+
+        end
+	return EPREWARDS, EPOPTREWARDS
+end

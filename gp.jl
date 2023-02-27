@@ -36,7 +36,7 @@ function gp_posterior(x_new, X, y, kernel_scale, kernel_bandwidth, obs_sd)
     if n == 0
         return 0, obs_sd^2
     end
-    K_plus_noise = gp_kernel(X, kernel_scale, kernel_bandwidth) + diagm(repeat([obs_sd^2], n))
+    K_plus_noise = gp_kernel(X, kernel_scale, kernel_bandwidth) + diagm(repeat([max(1e-8, obs_sd^2)], n))
     K_star = gp_new_kernel(x_new, X, kernel_scale, kernel_bandwidth)
 
     return dot(K_star, K_plus_noise \ y), kernel_scale - dot(K_star, K_plus_noise \ K_star)
@@ -65,7 +65,7 @@ end
 
 function gp_ep_contextual_bandit_simulator(ep, action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
     context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon, global_bandit_param, kernel_scale, kernel_bandwidth)
-        
+
     
         bandit_posterior_means = zeros(bandit_count, context_dim)
         bandit_posterior_covs = zeros(bandit_count, context_dim, context_dim)
@@ -85,7 +85,9 @@ function gp_ep_contextual_bandit_simulator(ep, action_function, T, rollout_lengt
             bandit_posterior_means[i, :] = repeat([bandit_prior_mean], context_dim)
             bandit_posterior_covs[i, :, :] = Diagonal(repeat([bandit_prior_sd^2], context_dim))
         end
-        
+
+
+
         for t in 1:T
             context = generate_context(context_dim, context_mean, context_sd, context_constant)
             #true_expected_rewards_logit = true_bandit_param * context
@@ -119,7 +121,7 @@ function gp_ep_contextual_bandit_simulator(ep, action_function, T, rollout_lengt
             global_bandit_param[:, t] = true_expected_rewards
 
 
-	        println("Ep: ", ep, " - ", t, " of ", T, " for ", String(Symbol(action_function)))
+	        #println("Ep: ", ep, " - ", t, " of ", T, " for ", String(Symbol(action_function)))
             flush(stdout)
 
         end
@@ -893,6 +895,10 @@ function gp_thompson_policy(ep, t, T, bandit_count, context, X, y, A, discount, 
 end
 
 
+function gp_exp4_policy_generic(ep, t, T, bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, kernel_scale, kernel_bandwidth, obs_sd, expected_rewards, variance_rewards, training_covariance_inverses, policies, policy_probs)
+    pol = sample(policies, Weights([policy_probs]))
+    return pol(ep, t, T, bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, kernel_scale, kernel_bandwidth, obs_sd, expected_rewards, variance_rewards, training_covariance_inverses)
+end
 
 
 ## IDS POLICY
@@ -964,6 +970,107 @@ function gp_ids_4_policy(ep, t, T, bandit_count, context, X, y, A, discount, eps
     A[t] = 0
     gp_expected_regrets = gp_ids_expected_regrets(expected_rewards, variance_rewards, 1000)  
     return findmax(-1 .* gp_expected_regrets.^4 ./ gp_ent_gains)[2]
+end
+
+
+function gp_ep_contextual_bandit_simulator(ep, action_function::exp4, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
+    context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon, global_bandit_param, kernel_scale, kernel_bandwidth)
+
+    
+        bandit_posterior_means = zeros(bandit_count, context_dim)
+        bandit_posterior_covs = zeros(bandit_count, context_dim, context_dim)
+    	#bandit_param = copy(global_bandit_param)
+        #true_bandit_param = copy(global_bandit_param)
+        EPREWARDS = zeros(T)
+	    EPOPTREWARDS = zeros(T)
+        
+        X_tot = zeros(T, context_dim)
+        Y_tot = zeros(T)
+        A_tot = zeros(T)
+        training_covariance_inverses = [zeros(0,0) for k in 1:bandit_count]
+
+        expected_rewards = zeros(bandit_count)
+        variance_rewards = zeros(bandit_count)
+        for i in 1:bandit_count
+            bandit_posterior_means[i, :] = repeat([bandit_prior_mean], context_dim)
+            bandit_posterior_covs[i, :, :] = Diagonal(repeat([bandit_prior_sd^2], context_dim))
+        end
+        
+        # track eta/gamma
+        E_star_t = 0
+
+        for t in 1:T
+            context = generate_context(context_dim, context_mean, context_sd, context_constant)
+            #true_expected_rewards_logit = true_bandit_param * context
+            #true_expected_rewards = exp.(true_expected_rewards_logit) ./ (1 .+ exp.(true_expected_rewards_logit))
+            #true_expected_rewards = bandit_posterior_means * context
+            #
+            #
+            #
+            for k in 1:bandit_count
+                expected_rewards[k], variance_rewards[k] = gp_posterior_given_inverse(context, X_tot[A_tot .== k, :], Y_tot[A_tot .== k], kernel_scale, kernel_bandwidth, obs_sd, training_covariance_inverses[k])
+            end
+
+            ## ADVICE RECEIVED
+            action_probs_matrix = gp_get_action_probs(action_function.policy_list, ep, t, T, bandit_count, context, X_tot, Y_tot, A_tot, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, kernel_scale, kernel_bandwidth, obs_sd, expected_rewards, variance_rewards, training_covariance_inverses)
+            action_probs = action_probs_matrix' * action_function.policy_probs
+            action = sample(1:bandit_count, Weights(action_probs))
+            
+            if t == 1
+                true_expected_rewards = sqrt(kernel_scale) .* randn(bandit_count)
+            else 
+                true_moments = [gp_posterior(context, X_tot[1:(t-1), :], global_bandit_param[k, 1:(t-1)], kernel_scale, kernel_bandwidth, 0) for k in 1:bandit_count]   
+                true_expected_rewards = [item[1] + sqrt(item[2]) * randn() for item in true_moments]
+            end
+            EPREWARDS[t] = true_expected_rewards[action]
+            EPOPTREWARDS[t] = maximum(true_expected_rewards)
+            #obs = randn() * sqrt(obs_sd^2 + dot(context, bandit_posterior_covs[action,:,:],context)) + true_expected_reward
+            obs = true_expected_rewards[action] + obs_sd * randn()
+
+            E_star_t += sum(maximum(action_probs_matrix, dims = 1))
+            eta = sqrt(log(length(action_function.policy_list)) / E_star_t)
+            gamma = eta / 2
+
+            ## UPDATE POLICY PROBS
+            obs_weighted = obs / (action_probs[action] + gamma)
+            policy_rewards = obs_weighted .* action_probs_matrix[:, action]
+
+            action_function.policy_probs .*= exp.(eta .* policy_rewards)
+            action_function.policy_probs ./= sum(action_function.policy_probs)
+
+
+
+            # the order of the below matters for training covariance inverses computation!!!!
+            training_covariance_inverses[action] = gp_block_inverse(training_covariance_inverses[action], gp_new_kernel(context, X_tot[A_tot .== action, :], kernel_scale, kernel_bandwidth), obs_sd^2 + kernel_scale)   
+            Y_tot[t] = obs
+            A_tot[t] = action
+            X_tot[t, :] = context
+            global_bandit_param[:, t] = true_expected_rewards
+
+
+	        #println("Ep: ", ep, " - ", t, " of ", T, " for ", String(Symbol(action_function)))
+            flush(stdout)
+
+        end
+	return EPREWARDS, EPOPTREWARDS
+end
+
+
+function gp_get_action_probs(policy_list, ep, t, T, bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, kernel_scale, kernel_bandwidth, obs_sd, expected_rewards, variance_rewards, training_covariance_inverses)
+    out = zeros(length(policy_list), bandit_count)
+    for i in eachindex(policy_list)
+        pol = policy_list[i]
+        if pol == gp_thompson_policy
+            for j in 1:1000
+                out[i, pol(ep, t, T, bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, kernel_scale, kernel_bandwidth, obs_sd, expected_rewards, variance_rewards, training_covariance_inverses)] += 1
+            end
+            out[i, :] ./= 1000
+        else
+            out[i, pol(ep, t, T, bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, kernel_scale, kernel_bandwidth, obs_sd, expected_rewards, variance_rewards, training_covariance_inverses)] += 1
+        end
+    end
+
+    return out
 end
 
 

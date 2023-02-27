@@ -1152,3 +1152,74 @@ end
 
 
 
+function vb_get_action_probs(policy_list, ep, t, T, bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+    out = zeros(length(policy_list), bandit_count)
+    for i in eachindex(policy_list)
+        pol = policy_list[i]
+        if pol == vb_thompson_policy
+            for j in 1:1000
+                out[i, pol(ep, t, T, bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)] += 1
+            end
+            out[i, :] ./= 1000
+        else
+            out[i, pol(ep, t, T, bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)] += 1
+        end
+    end
+
+    return out
+end
+
+function vb_bernoulli_ep_contextual_bandit_simulator(ep,action_function::exp4, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
+    context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon, global_bandit_param)
+        
+    
+        bandit_posterior_means = zeros(bandit_count, context_dim)
+        bandit_posterior_covs = zeros(bandit_count, context_dim, context_dim)
+    	bandit_param = copy(global_bandit_param)
+        true_bandit_param = copy(global_bandit_param)
+        EPREWARDS = zeros(T)
+	    EPOPTREWARDS = zeros(T)
+        
+        X_tot = zeros(T, context_dim)
+        Y_tot = zeros(T)
+        A_tot = zeros(T)
+
+        for i in 1:bandit_count
+            bandit_posterior_means[i, :] = repeat([bandit_prior_mean], context_dim)
+            bandit_posterior_covs[i, :, :] = Diagonal(repeat([bandit_prior_sd^2], context_dim))
+        end
+        E_star_t = 0        
+        for t in 1:T
+            context = generate_context(context_dim, context_mean, context_sd, context_constant)
+            true_expected_rewards_logit = true_bandit_param * context
+            true_expected_rewards = exp.(true_expected_rewards_logit) ./ (1 .+ exp.(true_expected_rewards_logit))
+            #true_expected_rewards = bandit_posterior_means * context
+            action_probs_matrix = vb_get_action_probs(action_function.policy_list, ep, t, T, bandit_count, context, X_tot, Y_tot, A_tot, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+            action_probs = action_probs_matrix' * action_function.policy_probs
+            action = sample(1:bandit_count, Weights(action_probs))
+            true_expected_reward = true_expected_rewards[action]
+            EPREWARDS[t] = true_expected_reward
+            EPOPTREWARDS[t] = maximum(true_expected_rewards)
+            #obs = randn() * sqrt(obs_sd^2 + dot(context, bandit_posterior_covs[action,:,:],context)) + true_expected_reward
+            obs = 1 * (rand() < true_expected_reward)
+            Y_tot[t] = obs
+            A_tot[t] = action
+            X_tot[t, :] = context
+            
+            E_star_t += sum(maximum(action_probs_matrix, dims = 1))
+            eta = sqrt(log(length(action_function.policy_list)) / E_star_t)
+            gamma = eta / 2
+
+            ## UPDATE POLICY PROBS
+            obs_weighted = obs / (action_probs[action] + gamma)
+            policy_rewards = obs_weighted .* action_probs_matrix[:, action]
+
+            action_function.policy_probs .*= exp.(eta .* policy_rewards)
+            action_function.policy_probs ./= sum(action_function.policy_probs)
+
+	        println("Ep: ", ep, " - ", t, " of ", T, " for ", String(Symbol(action_function)))
+            flush(stdout)
+
+        end
+	return EPREWARDS, EPOPTREWARDS
+end

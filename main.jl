@@ -1,12 +1,18 @@
 
 using LinearAlgebra, Statistics, Plots, Distributions, StatsBase, DelimitedFiles, CSV, Tables, Random, BenchmarkTools
-
+using XGBoost
 #using BayesianOptimization, GaussianProcesses, Distributions
 using Flux
 using BSON: @load
 using StatsBase
+using Suppressor
 #BLAS.set_num_threads(1)
 
+mutable struct exp4
+    policy_list::Vector{Function}
+    policy_probs::Vector{Float64}
+    #policy::Function
+end
 include("rollouts.jl")
 include("policies.jl")
 include("opt_alloc.jl")
@@ -18,14 +24,14 @@ include("gp.jl")
 include("mab.jl")
 #cnst mts = MersenneTwister.(1:Threads.nthreads())
 # Parameters
-const context_dim = 5
+const context_dim = 2
 const context_mean = 0
 const context_sd = 1 
 # set to false for gp
 const context_constant = true
 const obs_sd = 5
 
-const bandit_count = 10
+const bandit_count = 3
 const bandit_prior_mean = 0
 const bandit_prior_sd = 10
 
@@ -41,23 +47,23 @@ const n_dup = 10
 const multi_count = 10
 
 # SIMULATION HORIZON
-const T = 100
+const T = 20
 
 # NUMBER OF GLOBAL SIMULATION EPISODES (PER INDEX JOB)
-const n_episodes = 2
+const n_episodes = 1
 
 # DISCOUNT PARAMETER
-const discount = 1.
+const discount = 1
 
 # PARAMETER FOR EPSILON GREEDY POLICY
 const epsilon = .4
 const decreasing = true
 # PARAMETERS FOR ALL ROLLOUT METHODS
-const rollout_length = 50# 20
-const n_rollouts = 20000 # 100000
+const rollout_length = 30# 20
+const n_rollouts = 10000 # 100000
 
 # PARAMETERS FOR SPSA OPTIMIZATION METHOD
-const n_opt_rollouts = 20000 # 100000
+const n_opt_rollouts = 10000# 100000
 const n_spsa_iter = 10000
 
 
@@ -101,8 +107,17 @@ const vb_policy_tol = .01
 ### ADAPTIVE PARAM
 
 const expected_regret_thresh = .0005
-const action_expected_regret_thresh = .00001
+const action_expected_regret_thresh = .0005
 
+## DP PARAM
+const dp_rollout_count = 20000
+const num_round  = 3
+const dp_length = 3
+const param = ["max_depth" => 3,
+         "eta" => .5,
+         "objective" => "reg:squarederror",
+         "verbosity" => 0]
+const metrics = ["rmse"]
 
 ## SIMULATOR FUNCTION
 
@@ -118,7 +133,7 @@ multi_scale_list = []
 bern_neural_net_list = []
 bern_scale_list = []
 
-use_nn = true
+use_nn = false
 
 ## NEED TO DECIDE WHETHER TRUE IS USED
 if use_nn
@@ -1984,6 +1999,10 @@ end
 
 
 const discount_vector = discount .^ collect(0:(T-1))
+gp_exp4_policy = exp4([gp_greedy_policy, gp_thompson_policy, gp_glm_ucb_policy, gp_ids_policy], [1, 1, 1, 1])
+vb_exp4_policy = exp4([vb_greedy_policy, vb_thompson_policy, vb_glm_ucb_policy, vb_ids_policy], [1, 1, 1, 1])
+mab_exp4_policy = exp4([mab_greedy_policy, mab_thompson_policy, mab_bayes_ucb_policy, mab_ids_policy], [1, 1, 1, 1])
+lin_exp4_policy = exp4([greedy_policy, thompson_policy, bayes_ucb_policy, ids_policy], [1, 1, 1, 1])
 #const run_policies = [greedy_policy, greedy_policy, thompson_policy, thompson_policy]
 #const multi_ind = [true, false, true, false]
 
@@ -1998,9 +2017,16 @@ const discount_vector = discount .^ collect(0:(T-1))
 #const multi_ind = [false for i in 1:18]
 #const bern_ind = [true, false, true, false, true, false, true, false, true, false, false, false, false, false, true, true, true, true]
 
-const run_policies = [greedy_policy, thompson_policy, bayes_ucb_policy, ids_policy, val_greedy_thompson_ucb_ids_policy, mab_greedy_policy, mab_thompson_policy, mab_bayes_ucb_policy, mab_ids_policy, mab_val_greedy_thompson_ucb_ids_policy]
-#const run_policies = [gp_greedy_policy, gp_thompson_policy, gp_glm_ucb_policy, gp_ids_policy, gp_ids_4_policy, gp_val_greedy_thompson_ucb_ids_policy]
+#const run_policies = [greedy_policy, thompson_policy, bayes_ucb_policy, ids_policy, val_greedy_thompson_ucb_ids_policy, mab_greedy_policy, mab_thompson_policy, mab_bayes_ucb_policy, mab_ids_policy, mab_val_greedy_thompson_ucb_ids_policy]
+#const run_policies = [mab_greedy_policy, mab_thompson_policy, mab_bayes_ucb_policy, mab_ids_policy, mab_val_greedy_thompson_ucb_ids_q_policy]
+#const run_policies = [greedy_policy, thompson_policy, bayes_ucb_policy, ids_policy, val_greedy_thompson_ucb_ids_policy]
+
+#const run_policies = [gp_greedy_policy, gp_thompson_policy, gp_glm_ucb_policy, gp_ids_policy, gp_val_greedy_thompson_ucb_ids_policy]
+#const run_policies = [gp_greedy_policy, gp_thompson_policy, gp_glm_ucb_policy, gp_ids_policy, gp_exp4_policy]
 #const run_policies = [greedy_policy, thompson_policy, bayes_ucb_policy, ids_policy]
+const run_policies = [greedy_policy, thompson_policy, bayes_ucb_policy, ids_policy, dp_greedy_thompson_ucb_ids_policy]
+#const run_policies = [mab_ids_policy, mab_ids_1_policy, mab_ids_1_5_policy, mab_ids_2_5_policy, mab_ids_3_policy, mab_ids_multi_policy]
+
 const multi_ind = repeat([false], 10)
 const bern_ind = repeat([false], 10)
 const dlm_ind = repeat([false], 10)
