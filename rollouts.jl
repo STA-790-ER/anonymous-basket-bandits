@@ -662,12 +662,13 @@ function val_rollout(ep, policy, T_remainder, rollout_length, context, use_conte
             context = generate_context(context_dim, context_mean, context_sd, context_constant)
         end
 
-        action = policy(ep, t, min(T_remainder, rollout_length), bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+        action = policy(ep, t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
 
 
         #TRUE PARAM VERSION
+        mr = maximum(bandit_param * context)
         true_expected_reward = dot(bandit_param[action, :], context)
-        disc_reward += true_expected_reward * discount^(t-1)
+        disc_reward += (true_expected_reward-mr) * discount^(t-1)
         obs = randn() * obs_sd + true_expected_reward
         
         # UNKNOWN PARAM VERSION
@@ -735,19 +736,22 @@ function val_rollout(ep, policy, T_remainder, rollout_length, context, use_conte
                 context_reg_est = 0
                 expected_rewards = [dot(context, bandit_posterior_means[k, :]) for k in 1:bandit_count]
                 variance_rewards = [dot(context, bandit_posterior_covs[k, :, :], context) for k in 1:bandit_count]
-                point_samps =  expected_rewards .+ sqrt.(variance_rewards) .* randn(bandit_count, 500)
+                #point_samps =  expected_rewards .+ sqrt.(variance_rewards) .* randn(bandit_count, 500)
+                #expected_rewards = bandit_param * context
+                max_reward = maximum(expected_rewards)
                 if String(Symbol(policy)) == "thompson_policy"
                     for m in 1:500
-                        action = policy(ep, t_trunc, min(T_remainder, rollout_length), bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+                        action = policy(ep, t_trunc, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
                         reg_est *= ((n-1)*500 + m - 1) / ((n-1)*500 + m)
-                        reg_est += (findmax(point_samps[:, m])[1] - point_samps[action, m]) / ((n-1)*500 + m)
+                        reg_est += (max_reward - expected_rewards[action]) / ((n-1)*500 + m)
                     end
                 else
-                    action = policy(ep, t_trunc, min(T_remainder, rollout_length), bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
-                    for m in 1:500
-                        reg_est *= ((n-1)*500 + m - 1) / ((n-1)*500 + m)
-                        reg_est += (findmax(point_samps[:, m])[1] - point_samps[action, m]) / ((n-1)*500 + m)
-                    end
+                    action = policy(ep, t_trunc, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+                    reg_est += (max_reward - expected_rewards[action]) / 2
+                    #for m in 1:500
+                    #    reg_est *= ((n-1)*500 + m - 1) / ((n-1)*500 + m)
+                    #    reg_est += (findmax(point_samps[:, m])[1] - point_samps[action, m]) / ((n-1)*500 + m)
+                    #end
                 end
                 #reg_est *= (n-1) / n
                 #reg_est += (findmax(point_samps)[1] - point_samps[action]) / n
@@ -1085,8 +1089,29 @@ function get_features(context, bandit_posterior_means, bandit_posterior_covs)
     append!(input_vec, vcat([upper_triangular_vec(bandit_posterior_covs[a, :, :]) for a in sorted_arms]...))
     append!(input_vec, (bandit_posterior_means * context)[sorted_arms])
     append!(input_vec, [sqrt(dot(context, bandit_posterior_covs[a,:,:], context)) for a in sorted_arms])
-    append!(input_vec, context)
+    append!(input_vec, [sqrt(dot(context, bandit_posterior_covs[a,:,:], context)) for a in sorted_arms] .* (bandit_posterior_means * context)[sorted_arms])
+    #append!(input_vec, context)
     return input_vec, sorted_arms
+end
+function get_features_2(context, bandit_posterior_means, bandit_posterior_covs)
+    input_vec = bandit_posterior_means * context
+    append!(input_vec, [sqrt(dot(context, bandit_posterior_covs[a,:,:], context)) for a in 1:bandit_count])
+    append!(input_vec, [sqrt(dot(context, bandit_posterior_covs[a,:,:], context)) for a in 1:bandit_count] .* (bandit_posterior_means * context))
+    append!(input_vec, Vector(vec(bandit_posterior_means')))
+    append!(input_vec, vcat([upper_triangular_vec(bandit_posterior_covs[a, :, :]) for a in 1:bandit_count]...))
+    append!(input_vec, context)
+    return input_vec
+end
+
+function reduce_features(features, action)
+    triang_count = div((context_dim+1)*context_dim, 2)
+    top_features = [action, bandit_count + action, 2 * bandit_count + action]
+    mid_features = (3 * bandit_count + 1 + (action - 1) * context_dim):(3 * bandit_count + action * context_dim)
+    bottom_features = (3 * bandit_count + context_dim * bandit_count + 1 + (action - 1) * triang_count):(3 * bandit_count + context_dim * bandit_count + action * triang_count)
+    action_features = vcat(top_features, mid_features, bottom_features)
+    rem_features = collect(1:length(features))[setdiff((3*bandit_count + 1):end, action_features)] 
+    return features[vcat(action_features, rem_features)] 
+    #return features[vcat([action, bandit_count + action, 2 * bandit_count + action], (3 * bandit_count + 1):end)]
 end
 
 function dp_rollout(ep, policy, T_remainder, rollout_length, dp_length, dp_actions, context, use_context, lambda, context_dim, context_mean,
@@ -1109,24 +1134,25 @@ function dp_rollout(ep, policy, T_remainder, rollout_length, dp_length, dp_actio
     for t in 1:min_remainder_dp_length
 
 
-        if t > 1 || !use_context
+        if (t == 1) && !use_context
             context = generate_context(context_dim, context_mean, context_sd, context_constant)
         end
-        
-        old_features, arm_order = get_features(context, bandit_posterior_means, bandit_posterior_covs)
+        old_features = get_features_2(context, bandit_posterior_means, bandit_posterior_covs)
 
         action = dp_actions[t]
-        action_ind = findfirst(arm_order .== action)
-        
+        #action_ind = findfirst(arm_order .== action)
+         
+        old_features = reduce_features(old_features, action)
         push!(RESULTS[t], old_features)
-        push!(RESULTS[t], action_ind)
+        push!(RESULTS[t], action)
 
         
         #TRUE PARAM VERSION
+        mr = maximum(bandit_param * context)
         true_expected_reward = dot(bandit_param[action, :], context)
-        push!(RESULTS[t], true_expected_reward)
+        push!(RESULTS[t], true_expected_reward - mr)
         push!(RESULTS[t], 1 * (t == min_remainder_dp_length))
-        disc_reward += true_expected_reward * discount^(t-1)
+        disc_reward += (true_expected_reward-mr) * discount^(t-1)
         obs = randn() * obs_sd + true_expected_reward
         
         old_cov .= bandit_posterior_covs[action, :, :]
@@ -1153,101 +1179,107 @@ function dp_rollout(ep, policy, T_remainder, rollout_length, dp_length, dp_actio
         SigInvMu .= old_cov \ @view bandit_posterior_means[action,:]
 	    SigInvMu .+= context .* obs ./ obs_sd.^2
 	    mul!((@view bandit_posterior_means[action,:]), (@view bandit_posterior_covs[action,:,:]), SigInvMu)
-        
-        new_features, new_arm_order = get_features(context, bandit_posterior_means, bandit_posterior_covs)
+       
+
+        context = generate_context(context_dim, context_mean, context_sd, context_constant)
+        new_features = get_features_2(context, bandit_posterior_means, bandit_posterior_covs)
 	    push!(RESULTS[t], new_features)  
 
     end
-    for t in (1+min(T_remainder, dp_length)):min(T_remainder, rollout_length)
+    old_bandit_posterior_means = copy(bandit_posterior_means)
+    old_bandit_posterior_covs = copy(bandit_posterior_covs)
+    for ii in 1:dp_within_rollout_count
+        bandit_posterior_means .= old_bandit_posterior_means
+        bandit_posterior_covs .= old_bandit_posterior_covs
+        for t in (1+min(T_remainder, dp_length)):min(T_remainder, rollout_length)
 
-        context = generate_context(context_dim, context_mean, context_sd, context_constant)
+            context = generate_context(context_dim, context_mean, context_sd, context_constant)
 
-        action = policy(ep, t_curr+t-1, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+            action = policy(ep, t_curr+t-1, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
 
-        #TRUE PARAM VERSION
-        true_expected_reward = dot(bandit_param[action, :], context)
-        RESULTS[min_remainder_dp_length][3] += true_expected_reward * discount^(t - min(T_remainder, dp_length))
-        obs = randn() * obs_sd + true_expected_reward
-        old_cov .= bandit_posterior_covs[action, :, :]
-        mul!(CovCon, old_cov, context)
-        CovCon ./= obs_sd
+            #TRUE PARAM VERSION
+            true_expected_reward = dot(bandit_param[action, :], context)
+            RESULTS[min_remainder_dp_length][3] += (true_expected_reward - maximum(bandit_param * context)) * discount^(t - min(T_remainder, dp_length)) / dp_within_rollout_count
+            obs = randn() * obs_sd + true_expected_reward
+            old_cov .= bandit_posterior_covs[action, :, :]
+            mul!(CovCon, old_cov, context)
+            CovCon ./= obs_sd
 
-        dividy = 1 + dot(context ./ obs_sd, old_cov, context ./ obs_sd)
-        for i in 1:context_dim
-            for j in 1:context_dim
-                bandit_posterior_covs[action,j,i] = old_cov[j,i] - CovCon[j]*CovCon[i] / dividy
-            end
-        end
-
-	    for i in 1:context_dim
-		    for j in 1:(i-1)
-			    bandit_posterior_covs[action,i,j] = (bandit_posterior_covs[action,i,j]+bandit_posterior_covs[action,j,i])/2
-			    bandit_posterior_covs[action,j,i] = bandit_posterior_covs[action,i,j]
-		    end
-	    end
-
-        SigInvMu .= old_cov \ @view bandit_posterior_means[action,:]
-	    SigInvMu .+= context .* obs ./ obs_sd.^2
-	    mul!((@view bandit_posterior_means[action,:]), (@view bandit_posterior_covs[action,:,:]), SigInvMu)
-	    
-    end
-
-
-    if truncation_length > 0
-        
-        if true 
-            t_trunc = t_curr + min(T_remainder, rollout_length)
-            reg_est = 0
-            for n in 1:2
-                context = generate_context(context_dim, context_mean, context_sd, context_constant)
-                context_reg_est = 0
-                expected_rewards = [dot(context, bandit_posterior_means[k, :]) for k in 1:bandit_count]
-                variance_rewards = [dot(context, bandit_posterior_covs[k, :, :], context) for k in 1:bandit_count]
-                #point_samps =  expected_rewards .+ sqrt.(variance_rewards) .* randn(bandit_count, 500)
-                expected_rewards = bandit_param * context
-                max_reward = maximum(expected_rewards)
-                if String(Symbol(policy)) == "thompson_policy"
-                    for m in 1:500
-                        action = policy(ep, t_trunc, min(T_remainder, rollout_length), bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
-                        reg_est *= ((n-1)*500 + m - 1) / ((n-1)*500 + m)
-                        reg_est += (max_reward - expected_rewards[action]) / ((n-1)*500 + m)
-                    end
-                else
-                    action = policy(ep, t_trunc, min(T_remainder, rollout_length), bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
-                    #for m in 1:500
-                    #reg_est *= ((n-1)*500 + m - 1) / ((n-1)*500 + m)
-                    reg_est += (max_reward - expected_rewards[action])
-                    #end
+            dividy = 1 + dot(context ./ obs_sd, old_cov, context ./ obs_sd)
+            for i in 1:context_dim
+                for j in 1:context_dim
+                    bandit_posterior_covs[action,j,i] = old_cov[j,i] - CovCon[j]*CovCon[i] / dividy
                 end
-                #reg_est *= (n-1) / n
-                #reg_est += (findmax(point_samps)[1] - point_samps[action]) / n
             end
-            RESULTS[min_remainder_dp_length][3] -= .9 * discount^(1+min(T_remainder, rollout_length)-min(T_remainder, dp_length)) * sum(discount^(t - t_trunc) * reg_est * (1 + T - t) / (1 + T - t_trunc) for t in t_trunc:T)
-        
-        else
-            #### SWITCHED TO TRUE VALUE NEURAL NETWORK AS TEST
+
+            for i in 1:context_dim
+                for j in 1:(i-1)
+                    bandit_posterior_covs[action,i,j] = (bandit_posterior_covs[action,i,j]+bandit_posterior_covs[action,j,i])/2
+                    bandit_posterior_covs[action,j,i] = bandit_posterior_covs[action,i,j]
+                end
+            end
+
+            SigInvMu .= old_cov \ @view bandit_posterior_means[action,:]
+            SigInvMu .+= context .* obs ./ obs_sd.^2
+            mul!((@view bandit_posterior_means[action,:]), (@view bandit_posterior_covs[action,:,:]), SigInvMu)
             
-            #input_vec = Vector(vec(bandit_param'))
-            #append!(input_vec, Vector(vec(bandit_posterior_means')))
-            input_vec = Vector(vec(bandit_posterior_means'))
-            append!(input_vec, vcat([upper_triangular_vec(bandit_posterior_covs[a, :, :]) for a in 1:bandit_count]...))
+        end
+
+        if truncation_length > 0
             
-            scaled_input_vec = (input_vec .- scale_list[truncation_length][1:end .!= 1, 1]) ./ scale_list[truncation_length][1:end .!= 1, 2] 
+            if true 
+                t_trunc = t_curr + min(T_remainder, rollout_length)
+                reg_est = 0
+                for n in 1:2
+                    context = generate_context(context_dim, context_mean, context_sd, context_constant)
+                    context_reg_est = 0
+                    #expected_rewards = [dot(context, bandit_posterior_means[k, :]) for k in 1:bandit_count]
+                    variance_rewards = [dot(context, bandit_posterior_covs[k, :, :], context) for k in 1:bandit_count]
+                    #point_samps =  expected_rewards .+ sqrt.(variance_rewards) .* randn(bandit_count, 500)
+                    expected_rewards = bandit_param * context
+                    max_reward = maximum(expected_rewards)
+                    if String(Symbol(policy)) == "thompson_policy"
+                        for m in 1:500
+                            action = policy(ep, t_trunc, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+                            reg_est *= ((n-1)*500 + m - 1) / ((n-1)*500 + m)
+                            reg_est += (max_reward - expected_rewards[action]) / ((n-1)*500 + m)
+                        end
+                    else
+                        action = policy(ep, t_trunc, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
+                        #for m in 1:500
+                        #reg_est *= ((n-1)*500 + m - 1) / ((n-1)*500 + m)
+                        reg_est += (max_reward - expected_rewards[action]) / 2
+                        #end
+                    end
+                    #reg_est *= (n-1) / n
+                    #reg_est += (findmax(point_samps)[1] - point_samps[action]) / n
+                end
+                RESULTS[min_remainder_dp_length][3] -= .9 * discount^(1+min(T_remainder, rollout_length)-min(T_remainder, dp_length)) * sum(discount^(t - t_trunc) * reg_est * (1 + T - t) / (1 + T - t_trunc) for t in t_trunc:T) / dp_within_rollout_count
             
-            disc_reward += (discount^min(T_remainder, rollout_length)) * (scale_list[truncation_length][1,2]*neural_net_list[truncation_length](scaled_input_vec)[1] + scale_list[truncation_length][1,1])
-        
+            else
+                #### SWITCHED TO TRUE VALUE NEURAL NETWORK AS TEST
+                
+                #input_vec = Vector(vec(bandit_param'))
+                #append!(input_vec, Vector(vec(bandit_posterior_means')))
+                input_vec = Vector(vec(bandit_posterior_means'))
+                append!(input_vec, vcat([upper_triangular_vec(bandit_posterior_covs[a, :, :]) for a in 1:bandit_count]...))
+                
+                scaled_input_vec = (input_vec .- scale_list[truncation_length][1:end .!= 1, 1]) ./ scale_list[truncation_length][1:end .!= 1, 2] 
+                
+                disc_reward += (discount^min(T_remainder, rollout_length)) * (scale_list[truncation_length][1,2]*neural_net_list[truncation_length](scaled_input_vec)[1] + scale_list[truncation_length][1,1])
             
-            # Evaluating parameters for sanity check
-            
-            #test_out = []
-            #append!(test_out, input_vec)
-            #append!(test_out, scaled_input_vec)
-            #append!(test_out, (scale_list[truncation_length][1,2]*neural_net_list[truncation_length](scaled_input_vec)[1] + scale_list[truncation_length][1,1]))
-            #append!(test_out, neural_net_list[truncation_length](scaled_input_vec)[1]) 
-            #print(test_out) 
+                
+                # Evaluating parameters for sanity check
+                
+                #test_out = []
+                #append!(test_out, input_vec)
+                #append!(test_out, scaled_input_vec)
+                #append!(test_out, (scale_list[truncation_length][1,2]*neural_net_list[truncation_length](scaled_input_vec)[1] + scale_list[truncation_length][1,1]))
+                #append!(test_out, neural_net_list[truncation_length](scaled_input_vec)[1]) 
+                #print(test_out) 
+            end
         end
     end
-
     return RESULTS
 
 end

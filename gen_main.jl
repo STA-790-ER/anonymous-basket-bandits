@@ -4,9 +4,14 @@ using LinearAlgebra, Statistics, Plots, Distributions, StatsBase, DelimitedFiles
 #using BayesianOptimization, GaussianProcesses, Distributions
 using Flux
 using BSON: @load
-using StatsBase
+using StatsBase, Suppressor
 #BLAS.set_num_threads(1)
 
+mutable struct exp4
+    policy_list::Vector{Function}
+    policy_probs::Vector{Float64}
+    #policy::Function
+end
 include("rollouts.jl")
 include("policies.jl")
 include("opt_alloc.jl")
@@ -18,14 +23,17 @@ include("glm.jl")
 #
 
 const idx = Base.parse(Int, ENV["SLURM_ARRAY_TASK_ID"])
-gen_settings = CSV.read("generative_settings_3.csv", DataFrame, skipto = 1 + idx, limit = 1)
+gen_settings = CSV.read("genset2.csv", DataFrame, skipto = 1 + idx, limit = 1)
 
-const context_dim = gen_settings.context_dim[1]
+#const context_dim = gen_settings.context_dim[1]
+const context_dim = 5
 const context_mean = 0
 const context_sd = gen_settings.context_sd[1]
+const context_constant = true
 const obs_sd = gen_settings.obs_sd[1]
 
-const bandit_count = gen_settings.bandit_count[1]
+const bandit_count = 3
+#const bandit_count = gen_settings.bandit_count[1]
 const bandit_prior_mean = 0
 const bandit_prior_sd = gen_settings.prior_sd[1]
 
@@ -41,10 +49,10 @@ const multi_count = 10
 const T = 100
 
 # NUMBER OF GLOBAL SIMULATION EPISODES (PER INDEX JOB)
-const n_episodes = 5000
+const n_episodes = 15000
 
 # DISCOUNT PARAMETER
-const discount = 1.
+const discount = .95
 
 # PARAMETER FOR EPSILON GREEDY POLICY
 const epsilon = .4
@@ -131,6 +139,13 @@ upper_triangular_vec = function(M)
         return output
 end
 
+function generate_context(context_dim, context_mean, context_sd, context_constant)
+    if context_constant
+        return [1; context_mean .+ context_sd .* randn(context_dim - 1)]
+    else
+        return context_mean .+ context_sd .* randn(context_dim)
+    end
+end
 
 function ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
     context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon, global_bandit_param)
@@ -149,7 +164,8 @@ function ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n
             bandit_posterior_covs[i, :, :] = Diagonal(repeat([bandit_prior_sd^2], context_dim))
         end
         for t in 1:T
-            context = randn(context_dim) * context_sd .+ context_mean
+            #context = randn(context_dim) * context_sd .+ context_mean
+            context = generate_context(context_dim, context_mean, context_sd, context_constant)
             true_expected_rewards = true_bandit_param * context
             #true_expected_rewards = bandit_posterior_means * context
             action = action_function(ep, t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim)
@@ -1958,7 +1974,7 @@ const discount_vector = discount .^ collect(0:(T-1))
 const run_policies = [thompson_policy_4, thompson_policy_2, thompson_policy_0_5, thompson_policy_0_25, greedy_policy, thompson_policy, bayes_ucb_policy, ids_policy]
 const multi_ind = [false, false, false, false, false, false, false, false]
 const bern_ind = [false, false, false, false, false, false, false, false]
-const dlm_ind = [true, true, true, true, true, true, true, true]
+const dlm_ind = [false, false, false, false, false, false, false, false]
 
 const coord_epsilon_greedy = false
 const coord_thompson = false

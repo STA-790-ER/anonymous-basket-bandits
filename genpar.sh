@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH -J jlcb1
-#SBATCH --array 1-46080
+#SBATCH --array 1-16384
 #SBATCH --cpus-per-task 1
-#SBATCH --output="/hpc/home/jml165/slurmout/R-%A_%a.out"
-#SBATCH --error="/hpc/home/jml165/slurmout/R-%A_%a.err"
-#SBATCH --mem=1500M
+#SBATCH --output="/hpc/home/jml165/genslurmout/R-%A_%a.out"
+#SBATCH --error="/hpc/home/jml165/genslurmout/R-%A_%a.err"
+#SBATCH --mem=2000M
 #SBATCH --partition=scavenger
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=jml165@duke.edu

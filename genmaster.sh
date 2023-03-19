@@ -1,7 +1,7 @@
 #!/bin/bash
 
-rm -rf ~/slurmout/
-mkdir ~/slurmout
+rm -rf ~/genslurmout/
+mkdir ~/genslurmout
 rm -rf ~/rl/genarrayresults/
 mkdir ~/rl/genarrayresults
 rm -rf ~/rl/genarrayselectionresults/

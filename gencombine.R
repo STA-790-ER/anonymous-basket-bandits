@@ -1,7 +1,7 @@
 temp = list.files(path="~/rl/genarrayresults", pattern=glob2rx("results*.csv"), full.names=TRUE)
 agreetemp = list.files(path="~/rl/arrayresults", pattern = glob2rx("agree*.csv"), full.names = TRUE)
 files = lapply(temp, read.delim, header=TRUE, sep=",")
-gen_settings <- read.csv("~/rl/lawson-bandits/generative_settings_3.csv")[, -1]
+gen_settings <- read.csv("~/rl/lawson-bandits/genset2.csv")[, -1]
 
 if (length(agreetemp) > 0) {
 
