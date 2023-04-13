@@ -738,6 +738,255 @@ function gp_val_greedy_thompson_ucb_ids_policy(ep, t, T, bandit_count, context, 
     return findmax(ACTION_MEAN_REWARDS)[2]
 
 end
+function dp_gp_val_greedy_thompson_ucb_ids_policy(ep, t, T, bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, kernel_scale, kernel_bandwidth, obs_sd, expected_rewards, variance_rewards, training_covariance_inverses)
+
+
+    if t == 1
+        return rand(1:bandit_count)
+    end
+
+    #BANDIT_VALUES = zeros(bandit_count)
+    #predictive_rewards = bandit_posterior_means * context
+
+## PREALLOCATION
+    #roll_context = zeros(context_dim)
+    roll_true_expected_rewards = zeros(bandit_count)
+    #roll_CovCon = zeros(context_dim)
+    #roll_old_cov = zeros(context_dim, context_dim)
+    #roll_SigInvMu = zeros(context_dim)
+
+    #temp_post_means = zeros(bandit_count, context_dim)
+    #temp_post_covs = zeros(bandit_count, context_dim, context_dim)
+    #temp_bandit_mean = zeros(context_dim)
+    #temp_bandit_cov = zeros(context_dim, context_dim)
+
+    bandit_param = zeros(bandit_count, context_dim)
+    #true_expected_rewards = zeros(bandit_count)
+    #grad_est = zeros(3)
+
+    lambda = [0, 0]    
+    policies = [gp_greedy_policy, gp_thompson_policy, gp_glm_ucb_policy, gp_ids_policy]
+    policy_values = []
+    action_samps = [pol(ep, t, T, bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, kernel_scale, kernel_bandwidth, obs_sd, expected_rewards, variance_rewards, training_covariance_inverses) for pol in policies]
+    if length(unique(action_samps)) == 1
+        println("Agreement Action: ", action_samps[1])
+        flush(stdout)
+        return action_samps[1]
+    end
+    println("Context Start: ", context)
+    flush(stdout)
+
+    policy_count = length(policies)
+    rollout_training_covariance_inverses = copy(training_covariance_inverses)
+    REWARD_SAMPS = zeros(n_opt_rollouts, length(policies))
+    halt_vec = repeat([false], length(policies))
+    rollout_counts = repeat([0], length(policies))
+    same_break = false
+    for roll in 1:n_opt_rollouts  
+
+            MEAN_REWARD = 0
+
+            for pol_ind in 1:policy_count
+                
+                if halt_vec[pol_ind]
+                    continue
+                end
+
+                rollout_counts[pol_ind] += 1
+                use_context = true
+                
+                rollout_value = gp_val_rollout(ep, policies[pol_ind], T-t+1, rollout_length, context, use_context, context_dim, context_mean,
+                    context_sd, obs_sd, bandit_count, discount, X, y, A, bandit_param,
+                    roll_true_expected_rewards, kernel_scale, kernel_bandwidth, rollout_training_covariance_inverses)
+                A[t:T] .= 0
+                
+                MEAN_REWARD = ((roll - 1) * MEAN_REWARD + rollout_value) / roll
+                REWARD_SAMPS[roll, pol_ind] = rollout_value
+                for k in 1:bandit_count
+                    rollout_training_covariance_inverses[k] = training_covariance_inverses[k]
+                end
+            end
+            
+            if roll % 100 == 0
+                continue_inds = findall(halt_vec .== false)
+                policy_means = [mean(REWARD_SAMPS[1:roll, p]) for p in continue_inds]
+                policy_stds = [std(REWARD_SAMPS[1:roll, p] ./ sqrt(roll)) for p in continue_inds]
+                max_mean, max_ind = findmax(policy_means)
+                diff_means = max_mean .- policy_means
+                diff_stds = sqrt.(policy_stds[max_ind]^2 .+ policy_stds.^2)
+                pol_expected_regret_proportions = (diff_means .* cdf.(Normal(), -diff_means ./ diff_stds) .- diff_stds .* pdf.(Normal(), -diff_means ./ diff_stds)) ./ max_mean
+                halt_vec[continue_inds] = (abs.(pol_expected_regret_proportions) .< expected_regret_thresh)
+                halt_vec[continue_inds[max_ind]] = false
+
+                continue_inds = findall(halt_vec .== false)
+                if length(unique(action_samps[continue_inds])) == 1
+                    println("REMAINING POLICIES HAVE SAME ACTION (SAMPLE)")
+                    same_break = true
+                end
+            end
+
+            if same_break
+                break
+            end
+
+            if sum(halt_vec .== false) == 1
+                break
+            end
+            
+    end
+    
+    continue_inds = findall(halt_vec .== false)
+    
+    policy_means = [mean(REWARD_SAMPS[1:rollout_counts[p], p]) for p in 1:policy_count]
+    policy_stds = [std(REWARD_SAMPS[1:rollout_counts[p], p]) / sqrt(rollout_counts[p]) for p in 1:policy_count]
+
+    opt_index = continue_inds[findmax(policy_means[continue_inds])[2]]
+    opt_mean = policy_means[opt_index]
+    opt_std = policy_stds[opt_index]
+    println("POLICY VALUES: ", policy_means)
+    println("POLICY STDS: ", policy_stds)
+    println("OPT VALUE: ", opt_mean)
+    println("OPT POLICY: ", String(Symbol(policies[opt_index])))
+    println("POLICY ITERS: ", rollout_counts)
+    flush(stdout)
+
+    opt_policy = policies[opt_index]
+    
+    MEM = [[] for tt in 1:min(T-t+1,dp_length)]
+    MEM[1] = [[] for b in 1:bandit_count]
+    
+    for tt in 1:dp_rollout_count
+        dp_actions = sample(1:bandit_count, dp_length)
+        #copy!(temp_post_means, bandit_posterior_means)
+        #copy!(temp_post_covs, bandit_posterior_covs)
+        RESULTS = dp_gp_rollout(ep, opt_policy, T-t+1, rollout_length, dp_length, dp_actions, context, use_context, lambda, context_dim, context_mean,
+                             context_sd, obs_sd, bandit_count, discount, X, y, A, bandit_param, roll_true_expected_rewards, kernel_scale, kernel_bandwidth, rollout_training_covariance_inverses)
+        A[t:T] .= 0
+        for i in eachindex(RESULTS)
+            if i == 1
+                push!(MEM[i][dp_actions[1]], RESULTS[i])
+            else
+                push!(MEM[i], RESULTS[i])
+            end
+        end
+    end
+    #M = [Vector{Any}(undef, bandit_count) for tt in 1:min(T-t+1, dp_length)]
+    BANDIT_PARAM_SAMPS = nothing
+    M = Vector{Any}(undef, min(T-t+1, dp_length))
+    M[1] = zeros(bandit_count)
+    for s in 1:min(dp_length, T-t+1)
+        tt = min(dp_length, T-t+1) - s + 1
+        if tt>1
+            Y = [u[3] + discount * (u[4] == 0 ? maximum([XGBoost.predict(M[tt+1], reshape(reduce_features_gp(u[5], bb), 1, length(u[5])-(bandit_count-1)*3+bandit_count))[1] for bb in 1:bandit_count]) : 0) for u in MEM[tt]]
+            X = reduce(vcat, transpose.([u[1] for u in MEM[tt]]))
+            M[tt] = xgboost_cv(X, Y, 4)
+        else
+            for b in 1:bandit_count
+                Y = [u[3] + discount * (u[4] == 0 ? maximum([XGBoost.predict(M[tt+1], reshape(reduce_features_gp(u[5], bb), 1, length(u[5])-(bandit_count-1)*3+bandit_count))[1] for bb in 1:bandit_count]) : 0) for u in MEM[tt][b]]
+                M[tt][b] = mean(Y)
+            end
+        end
+    end
+    
+    halt_vec .= false
+    halt_vec = halt_vec[1:2]
+    rollout_counts .= 0
+    rollout_counts = rollout_counts[1:2]
+
+    #BANDIT_PARAM_SAMPS = zeros(bandit_count, context_dim)
+    same_break = false
+    REWARD_SAMPS = zeros(n_opt_rollouts, 2)
+    #post_samplers = [MvNormal(bandit_posterior_means[k, :], bandit_posterior_covs[k, :, :]) for k in 1:bandit_count]
+    for roll in 1:n_opt_rollouts  
+
+        MEAN_REWARD = 0
+        
+        #bandit_param = BANDIT_PARAM_SAMPS[:, :, roll]
+
+        # BASE 
+        if !halt_vec[1]
+            
+
+            rollout_counts[1] += 1
+        
+            #bandit_param = zeros(bandit_count, context_dim)
+            use_context = true
+            
+            vb_bernoulli_val_rollout(ep, opt_policy, T-t+1, rollout_length, context, use_context, lambda, context_dim, context_mean, context_sd, obs_sd, bandit_count, discount, X, y, A, BANDIT_PARAM_SAMPS[:, :, roll], roll_true_expected_rewards, ms_Cs)
+            A[t:T] .= 0
+            
+            REWARD_SAMPS[roll, 1] = rollout_value     
+        end
+        
+        ## DP
+        if !halt_vec[2]
+            
+            for k in 1:bandit_count
+                rand!(post_samplers[k], @view BANDIT_PARAM_SAMPS[k, :])
+            end
+
+            rollout_counts[2] += 1
+        
+            #bandit_param = zeros(bandit_count, context_dim)
+            use_context = true
+            
+            rollout_value = dp_valuation_vb_rollout(ep, opt_policy, T-t+1, rollout_length, dp_length, dp_actions, context, use_context, lambda, context_dim, context_mean,
+                                                 context_sd, obs_sd, bandit_count, discount, X, y, A, BANDIT_PARAM_SAMPS[:, :, roll], roll_true_expected_rewards, ms_Cs, M)
+            A[t:T] .= 0 
+            REWARD_SAMPS[roll, 2] = rollout_value     
+        end
+
+        
+        if roll % 100 == 0
+            continue_inds = findall(halt_vec .== false)
+            policy_means = [mean(REWARD_SAMPS[1:roll, p]) for p in continue_inds]
+            policy_stds = [std(REWARD_SAMPS[1:roll, p] ./ sqrt(roll)) for p in continue_inds]
+            max_mean, max_ind = findmax(policy_means)
+            diff_means = max_mean .- policy_means
+            diff_stds = sqrt.(policy_stds[max_ind]^2 .+ policy_stds.^2)
+            pol_expected_regret_proportions = (diff_means .* cdf.(Normal(), -diff_means ./ diff_stds) .- diff_stds .* pdf.(Normal(), -diff_means ./ diff_stds)) ./ max_mean
+            halt_vec[continue_inds] = (abs.(pol_expected_regret_proportions) .< dp_expected_regret_thresh)
+            halt_vec[continue_inds[max_ind]] = false
+            continue_inds = findall(halt_vec .== false)
+            #if length(unique(action_samps[continue_inds])) == 1
+            #    println("REMAINING POLICIES HAVE SAME ACTION (SAMPLE)")
+            #    same_break = true
+            #end
+        end
+        
+        if same_break
+            break
+        end
+
+        if (sum(halt_vec .== false) == 1) 
+            break
+        end
+    end
+    
+    dp_policies = ["base", "dp"]
+    continue_inds = findall(halt_vec .== false)
+    
+    policy_means = [mean(REWARD_SAMPS[1:rollout_counts[p], p]) for p in 1:2]
+    policy_stds = [std(REWARD_SAMPS[1:rollout_counts[p], p]) / sqrt(rollout_counts[p]) for p in 1:2]
+
+    opt_index = continue_inds[findmax(policy_means[continue_inds])[2]]
+    opt_mean = policy_means[opt_index]
+    opt_std = policy_stds[opt_index]
+    println("DP POLICY VALUES: ", policy_means)
+    println("DP POLICY STDS: ", policy_stds)
+    println("DP OPT VALUE: ", opt_mean)
+    println("DP OPT POLICY: ", dp_policies[opt_index])
+    println("DP POLICY ITERS: ", rollout_counts)
+    flush(stdout)
+    REWARD_SAMPS = nothing
+    if opt_index == 1
+        return opt_policy(ep, t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim) 
+    end
+    return findmax(M[1])[2]
+    return opt_policy(ep, t, T, bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, kernel_scale, kernel_bandwidth, obs_sd, expected_rewards, variance_rewards, training_covariance_inverses) 
+    
+
+end
 
 function gp_val_rollout(ep, policy, T_remainder, rollout_length, context, use_context, context_dim, context_mean,
     context_sd, obs_sd, bandit_count, discount, X, y, A, bandit_param,
@@ -1074,4 +1323,170 @@ function gp_get_action_probs(policy_list, ep, t, T, bandit_count, context, X, y,
 end
 
 
+function get_features_gp(context, expected_rewards, variance_rewards, history)
+    input_vec = copy(expected_rewards)
+    append!(input_vec, sqrt.(variance_rewards))
+    append!(input_vec, expected_rewards .* sqrt.(variance_rewards))
+    append!(input_vec, context)
+    for item in history
+        append!(input_vec, item)
+    end
+    return input_vec
+end
+function reduce_features_gp(features, action)
+    one_hot = zeros(bandit_count)
+    one_hot[action] = 1.
+    return vcat(features[vcat([action, bandit_count + action, 2 * bandit_count + action], (3 * bandit_count + 1):end)], one_hot)
+end
 
+function dp_gp_rollout(ep, policy, T_remainder, rollout_length, dp_length, dp_actions, context, use_context, context_dim, context_mean,
+    context_sd, obs_sd, bandit_count, discount, X, y, A, bandit_param,
+	true_expected_rewards, kernel_scale, kernel_bandwidth, rollout_training_covariance_inverses)
+
+    disc_reward = 0
+    #fill!(context, 0.0)
+    fill!(true_expected_rewards, 0.0)
+    #fill!(CovCon, 0.0)
+    #fill!(old_cov,0.0)
+    #fill!(SigInvMu,0.0)
+    expected_rewards = zeros(bandit_count)
+    variance_rewards = zeros(bandit_count)
+    truncation_length = T_remainder - min(T_remainder, rollout_length)
+    
+    t_curr = T - T_remainder + 1
+    #rollout_training_covariance_inverses = copy(training_covariance_inverses)
+    min_remainder_dp_length = min(T_remainder, dp_length)
+    
+    RESULTS = [[] for i in 1:min_remainder_dp_length]
+    history = [] 
+    for t in 1:min_remainder_dp_length
+
+        #context_seed = rand(1:context_dim)
+        #fill!(context, zero(context[1]))
+        #context[context_seed] = 1
+        #mul!(true_expected_rewards, bandit_param, context)
+        local expected_rewards
+        local variance_rewards
+        if (t == 1) && !use_context
+            context = generate_context(context_dim, context_mean, context_sd, context_constant)
+            for k in 1:bandit_count 
+                expected_rewards[k], variance_rewards[k] = gp_posterior_given_inverse(context, X[A .== k, :], y[A .== k], kernel_scale, kernel_bandwidth, obs_sd, rollout_training_covariance_inverses[k])
+            end
+        elseif t==1
+            for k in 1:bandit_count 
+                expected_rewards[k], variance_rewards[k] = gp_posterior_given_inverse(context, X[A .== k, :], y[A .== k], kernel_scale, kernel_bandwidth, obs_sd, rollout_training_covariance_inverses[k])
+            end
+        end 
+        old_features = get_features_gp(context, expected_rewards, variance_rewards, history)
+
+        action = dp_actions[t]
+        #action_ind = findfirst(arm_order .== action)
+         
+        old_features = reduce_features_vb(old_features, action)
+        push!(RESULTS[t], old_features)
+        push!(RESULTS[t], action)
+        
+        #for k in 1:bandit_count 
+        #    expected_rewards[k], variance_rewards[k] = gp_posterior_given_inverse(context, X[A .== k, :], y[A .== k], kernel_scale, kernel_bandwidth, obs_sd, rollout_training_covariance_inverses[k])
+        #end
+
+        push!(RESULTS[t], expected_rewards[action])
+        push!(RESULTS[t], 1 * (t == min_remainder_dp_length))
+
+        # TRUE PARAM VERSION
+        #true_expected_reward = true_expected_rewards[action]
+        #disc_reward += true_expected_reward * discount^(t-1)
+        #obs = randn() * obs_sd + true_expected_reward
+        
+        disc_reward += expected_rewards[action] * discount^(t-1)
+
+        obs = expected_rewards[action] + sqrt(obs_sd^2 + variance_rewards[action]) * randn()
+        
+        # order of below matters for covariance inverses !!!
+        rollout_training_covariance_inverses[action] = gp_block_inverse(rollout_training_covariance_inverses[action], gp_new_kernel(context, X[A .== action, :], kernel_scale, kernel_bandwidth), obs_sd^2 + kernel_scale)   
+        
+        y[t_curr + t - 1] = obs
+        A[t_curr + t - 1] = action
+        X[(t_curr + t - 1), :] = context
+        
+        push!(history, [obs, action, context...])
+        if t < min_remainder_dp_length 
+            context = generate_context(context_dim, context_mean, context_sd, context_constant)
+            for k in 1:bandit_count 
+                expected_rewards[k], variance_rewards[k] = gp_posterior_given_inverse(context, X[A .== k, :], y[A .== k], kernel_scale, kernel_bandwidth, obs_sd, rollout_training_covariance_inverses[k])
+            end
+        end
+        
+        new_features = get_features_gp(context, expected_rewards, variance_rewards, history)
+	    push!(RESULTS[t], new_features)  
+        # UNKNOWN PARAM VERSION
+    end
+
+    for t in (1+min(T_remainder, dp_length)):min(T_remainder, rollout_length)
+    
+        context = generate_context(context_dim, context_mean, context_sd, context_constant)
+        for k in 1:bandit_count
+            expected_rewards[k], variance_rewards[k] = gp_posterior_given_inverse(context, X[A .== k, :], y[A .== k], kernel_scale, kernel_bandwidth, obs_sd, rollout_training_covariance_inverses[k])
+        end
+        #action_ind = findfirst(arm_order .== action)
+         
+        action = policy(ep, t_curr + t - 1, min(T_remainder, rollout_length), bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, kernel_scale, kernel_bandwidth, obs_sd, expected_rewards, variance_rewards, rollout_training_covariance_inverses)
+        
+        #for k in 1:bandit_count 
+        #    expected_rewards[k], variance_rewards[k] = gp_posterior_given_inverse(context, X[A .== k, :], y[A .== k], kernel_scale, kernel_bandwidth, obs_sd, rollout_training_covariance_inverses[k])
+        #end
+
+        RESULTS[min_remainder_dp_length][3] += (expected_rewards[action]) * discount^(t - min(T_remainder, dp_length))
+
+        # TRUE PARAM VERSION
+        #true_expected_reward = true_expected_rewards[action]
+        #disc_reward += true_expected_reward * discount^(t-1)
+        #obs = randn() * obs_sd + true_expected_reward
+        
+        disc_reward += expected_rewards[action] * discount^(t-1)
+
+        obs = expected_rewards[action] + sqrt(obs_sd^2 + variance_rewards[action]) * randn()
+        
+        # order of below matters for covariance inverses !!!
+        rollout_training_covariance_inverses[action] = gp_block_inverse(rollout_training_covariance_inverses[action], gp_new_kernel(context, X[A .== action, :], kernel_scale, kernel_bandwidth), obs_sd^2 + kernel_scale)   
+        
+        y[t_curr + t - 1] = obs
+        A[t_curr + t - 1] = action
+        X[(t_curr + t - 1), :] = context
+        
+        #push!(history, [obs, action, context...])
+    end
+    
+    if truncation_length > 0
+        t_trunc = t_curr + min(T_remainder, rollout_length)
+        reg_est = 0
+        for n in 1:50
+            context = generate_context(context_dim, context_mean, context_sd, context_constant)
+            context_reg_est = 0
+            for k in 1:bandit_count
+                expected_rewards[k], variance_rewards[k] = gp_posterior_given_inverse(context, X[A .== k, :], y[A .== k], kernel_scale, kernel_bandwidth, obs_sd, rollout_training_covariance_inverses[k])
+            end
+            point_samps =  expected_rewards .+ sqrt.(variance_rewards) .* randn(bandit_count, 500)
+            if String(Symbol(policy)) == "gp_thompson_policy"
+                for m in 1:500
+                    action = policy(ep, t_trunc, min(T_remainder, rollout_length), bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, kernel_scale, kernel_bandwidth, obs_sd, expected_rewards, variance_rewards, rollout_training_covariance_inverses)
+                    reg_est *= ((n-1)*500 + m - 1) / ((n-1)*500 + m)
+                    reg_est += (findmax(point_samps[:, m])[1] - point_samps[action, m]) / ((n-1)*500 + m)
+                end
+            else
+                action = policy(ep, t_trunc, min(T_remainder, rollout_length), bandit_count, context, X, y, A, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, kernel_scale, kernel_bandwidth, obs_sd, expected_rewards, variance_rewards, rollout_training_covariance_inverses)
+                for m in 1:500
+                    reg_est *= ((n-1)*500 + m - 1) / ((n-1)*500 + m)
+                    reg_est += (findmax(point_samps[:, m])[1] - point_samps[action, m]) / ((n-1)*500 + m)
+                end
+            end
+            #reg_est *= (n-1) / n
+            #reg_est += (findmax(point_samps)[1] - point_samps[action]) / n
+        end
+
+        RESULTS[min_remainder_dp_length][3] -= .9 * discount^(1-min_remainder_dp_length+min(T_remainder, rollout_length)) * sum(discount^(t - t_trunc) * reg_est * (1 + T - t) / (1 + T - t_trunc) for t in t_trunc:T)
+
+    end
+
+    return RESULTS
+    end

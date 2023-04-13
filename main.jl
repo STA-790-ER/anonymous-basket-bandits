@@ -26,10 +26,10 @@ include("mab.jl")
 # Parameters
 const context_dim = 5
 const context_mean = 0
-const context_sd = .125 
+const context_sd = .25 
 # set to false for gp
 const context_constant = true
-const obs_sd = 10
+const obs_sd = 4
 
 const bandit_count = 3
 const bandit_prior_mean = 0
@@ -50,20 +50,20 @@ const multi_count = 10
 const T = 100
 
 # NUMBER OF GLOBAL SIMULATION EPISODES (PER INDEX JOB)
-const n_episodes = 1
+const n_episodes = 5
 
 # DISCOUNT PARAMETER
-const discount = .95
+const discount = .98
 
 # PARAMETER FOR EPSILON GREEDY POLICY
 const epsilon = .4
 const decreasing = true
 # PARAMETERS FOR ALL ROLLOUT METHODS
-const rollout_length = 30# 20
+const rollout_length = 50# 20
 const n_rollouts = 10000 # 100000
 
 # PARAMETERS FOR SPSA OPTIMIZATION METHOD
-const n_opt_rollouts = 12000# 100000
+const n_opt_rollouts = 10000# 10000hh0
 const n_spsa_iter = 20000
 
 
@@ -106,14 +106,15 @@ const vb_policy_tol = .01
 
 ### ADAPTIVE PARAM
 
-const expected_regret_thresh = .0003
-const action_expected_regret_thresh = .0003
+const expected_regret_thresh = .0001
+const action_expected_regret_thresh = .0001
+const dp_expected_regret_thresh = .0001
 
 ## DP PARAM
 const dp_rollout_count = 4000
-const dp_within_rollout_count = 30
+const dp_within_rollout_count = 50
 const num_round  = 3
-const dp_length = 1
+const dp_length = 3
 const param = ["max_depth" => 3,
          "eta" => .5,
          "objective" => "reg:squarederror",
@@ -124,6 +125,7 @@ const metrics = ["rmse"]
 
 
 const idx = Base.parse(Int, ENV["SLURM_ARRAY_TASK_ID"])
+Random.seed!(idx + 42)
 
 neural_net_list = []
 scale_list = []
@@ -136,6 +138,43 @@ bern_scale_list = []
 
 use_nn = false
 
+### UNKNOWN CONTEXT DIST
+const use_context_prior = true
+const est_context_var_noise = .5
+const ν = 2 / est_context_var_noise^2 + context_dim - context_constant + 3
+const Ψ = context_sd^2 * (ν - context_dim - context_constant - 1) * Matrix(1.0I, context_dim - context_constant, context_dim - context_constant)
+const λ = 1
+const μ = zeros(context_dim -context_constant)
+
+function generate_context(context_dim, context_mean, context_sd, context_constant)
+    if context_constant
+        return [1; context_mean .+ context_sd .* randn(context_dim - 1)]
+    else
+        return context_mean .+ context_sd .* randn(context_dim)
+    end
+end
+function generate_context_mvn(context_dim, context_mean, context_cov, context_constant)
+    if context_constant
+        return [1; rand(MvNormal(context_mean, context_cov))]
+    else
+        return rand(MvNormal(context_mean, context_cov))
+    end
+end
+function generate_context_mvn(sampler, context_constant)
+    if context_constant
+        return [1; rand(sampler)]
+    else
+        return rand(sampler)
+    end
+end
+
+if use_context_prior
+    const ground_truth_context_covs = rand(InverseWishart(ν, Ψ), n_episodes)
+    const ground_truth_context_means = [rand(MvNormal(zeros(context_dim - context_constant), iw ./ λ)) for iw in ground_truth_context_covs]
+    const ground_truth_context = [[generate_context_mvn(MvNormal(ground_truth_context_means[i], ground_truth_context_covs[i]), context_constant) for t in 1:T] for i in 1:n_episodes]
+else
+    const ground_truth_context = [[generate_context(context_dim, context_mean, context_sd, context_constant) for t in 1:T] for i in 1:n_episodes]
+end
 #GC.enable_logging(true)
 
 ## NEED TO DECIDE WHETHER TRUE IS USED
@@ -176,16 +215,25 @@ upper_triangular_vec = function(M)
         return output
 end
 
-function generate_context(context_dim, context_mean, context_sd, context_constant)
+const ground_truth_param = bandit_prior_mean .+ bandit_prior_sd .* randn(bandit_count, context_dim, n_episodes)
+const ground_truth_obs = obs_sd .* randn(T, n_episodes)
+const ground_truth_obs_bern = rand(T, n_episodes)
+
+function update_context_posterior!(context, posterior)
     if context_constant
-        return [1; context_mean .+ context_sd .* randn(context_dim - 1)]
+        posterior[4] .+= (posterior[2] / (1 + posterior[2])) .* ((context[2:end] .- posterior[1]) * (context[2:end] .- posterior[1])')
+        posterior[1] .*= (posterior[2] / (1 + posterior[2]))
+        posterior[1] .+= context[2:end] ./ (1 + posterior[2])
+        posterior[2] += 1
+        posterior[3] += 1
     else
-        return context_mean .+ context_sd .* randn(context_dim)
+        posterior[4] .+= (posterior[2] / (1 + posterior[2])) .* ((context .- posterior[1]) * (context .- posterior[1])')
+        posterior[1] .*= (posterior[2] / (1 + posterior[2]))
+        posterior[1] .+= context ./ (1 + posterior[2])
+        posterior[2] += 1
+        posterior[3] += 1
     end
 end
-const ground_truth_param = bandit_prior_mean .+ bandit_prior_sd .* randn(bandit_count, context_dim, n_episodes)
-const ground_truth_context = [[generate_context(context_dim, context_mean, context_sd, context_constant) for _ in 1:T] for _ in 1:n_episodes]
-const ground_truth_obs = obs_sd .* randn(T, n_episodes)
 
 function ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
     context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon, global_bandit_param)
@@ -227,6 +275,47 @@ function ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n
         end
 	return EPREWARDS, EPOPTREWARDS
 end
+function ep_contextual_bandit_simulator_context_mvn(ep,action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
+    context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon, global_bandit_param)
+        
+    
+        bandit_posterior_means = zeros(bandit_count, context_dim)
+        bandit_posterior_covs = zeros(bandit_count, context_dim, context_dim)
+    	bandit_param = copy(global_bandit_param)
+        true_bandit_param = copy(global_bandit_param)
+        EPREWARDS = zeros(T)
+	    EPOPTREWARDS = zeros(T)
+        context_posterior = [copy(μ), copy(λ), copy(ν), copy(Ψ)]
+        for i in 1:bandit_count
+            bandit_posterior_means[i, :] = repeat([bandit_prior_mean], context_dim)
+            bandit_posterior_covs[i, :, :] = Diagonal(repeat([bandit_prior_sd^2], context_dim))
+        end
+        for t in 1:T
+            #context = generate_context(context_dim, context_mean, context_sd, context_constant)
+            context = ground_truth_context[ep][t]
+            update_context_posterior!(context, context_posterior)
+            true_expected_rewards = true_bandit_param * context
+            #true_expected_rewards = bandit_posterior_means * context
+            action = action_function(ep, t, T, bandit_count, context, bandit_posterior_means, bandit_posterior_covs, discount, epsilon, rollout_length, n_rollouts, n_opt_rollouts, context_dim, context_posterior)
+            true_expected_reward = true_expected_rewards[action]
+            EPREWARDS[t] = true_expected_reward
+            EPOPTREWARDS[t] = maximum(true_expected_rewards)
+            #obs = randn() * sqrt(obs_sd^2 + dot(context, bandit_posterior_covs[action,:,:],context)) + true_expected_reward
+            obs = ground_truth_obs[t, ep] + true_expected_reward
+	        old_cov = bandit_posterior_covs[action, :, :]
+	        CovCon = old_cov * context ./ obs_sd
+	        #bandit_posterior_covs[action, :, :] = inv(context * context' / obs_sd^2 + old_precision)
+	        bandit_posterior_covs[action, :, :] = old_cov - CovCon * CovCon' ./ (1 + dot(context, old_cov, context) / obs_sd^2)
+	        bandit_posterior_covs[action, :, :] = ((bandit_posterior_covs[action,:,:]) + bandit_posterior_covs[action,:,:]')/2
+	        bandit_posterior_means[action, :] = (bandit_posterior_covs[action, :, :]) * (old_cov \ (bandit_posterior_means[action,:]) + context * obs / obs_sd^2)
+
+	        println("Ep: ", ep, " - ", t, " of ", T, " for ", String(Symbol(action_function)))
+            flush(stdout)
+
+            #GC.gc()
+        end
+	return EPREWARDS, EPOPTREWARDS
+end
 
 function contextual_bandit_simulator(action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
     context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon)
@@ -247,8 +336,13 @@ function contextual_bandit_simulator(action_function, T, rollout_length, n_episo
     
         #global_bandit_param = rand(Normal(bandit_prior_mean, bandit_prior_sd), bandit_count, context_dim)
         global_bandit_param = ground_truth_param[:, :, ep]
-        EPREWARDS, EPOPTREWARDS = ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
+        if use_context_prior
+            EPREWARDS, EPOPTREWARDS = ep_contextual_bandit_simulator_context_mvn(ep,action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
                                        context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon, global_bandit_param)
+        else
+            EPREWARDS, EPOPTREWARDS = ep_contextual_bandit_simulator(ep,action_function, T, rollout_length, n_episodes, n_rollouts, n_opt_rollouts, context_dim, context_mean,
+                                       context_sd, obs_sd, bandit_count, bandit_prior_mean, bandit_prior_sd, discount, epsilon, global_bandit_param)
+        end
         ep_count += 1
 	    REWARDS[:, ep] = EPREWARDS
 	    OPTREWARDS[:, ep] = EPOPTREWARDS
@@ -2034,7 +2128,7 @@ lin_exp4_policy = exp4([greedy_policy, thompson_policy, bayes_ucb_policy, ids_po
 #const run_policies = [gp_greedy_policy, gp_thompson_policy, gp_glm_ucb_policy, gp_ids_policy, gp_val_greedy_thompson_ucb_ids_policy]
 #const run_policies = [gp_greedy_policy, gp_thompson_policy, gp_glm_ucb_policy, gp_ids_policy, gp_exp4_policy]
 #const run_policies = [greedy_policy, thompson_policy, bayes_ucb_policy, ids_policy]
-const run_policies = [greedy_policy, thompson_policy, bayes_ucb_policy, ids_policy, dp_greedy_thompson_ucb_ids_policy]
+const run_policies = [greedy_policy, thompson_policy, bayes_ucb_policy, ids_policy, val_greedy_thompson_ucb_ids_policy]
 #const run_policies = [greedy_policy, thompson_policy, bayes_ucb_policy, ids_policy]
 #const run_policies = [mab_ids_policy, mab_ids_1_policy, mab_ids_1_5_policy, mab_ids_2_5_policy, mab_ids_3_policy, mab_ids_multi_policy]
 
